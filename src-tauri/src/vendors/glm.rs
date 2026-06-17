@@ -1,16 +1,23 @@
-//! z.ai (GLM / Zhipu) usage client.
+//! z.ai (GLM Coding Plan) usage client.
 //!
-//! z.ai's billing endpoint is account/region-specific, so the base URL is
-//! configurable in settings. We issue an authenticated GET and parse the JSON
-//! defensively for common balance/usage field names. The parser is pure and
-//! tested; the live endpoint must be confirmed against the user's account.
+//! Uses z.ai's monitor API: `GET /api/monitor/usage/quota/limit`. The coding-plan
+//! token is passed in the `Authorization` header WITHOUT a `Bearer` prefix.
+//! Response shape: `{ "data": { "limits": [ { type, percentage, currentValue,
+//! total, nextResetTime, ... } ] } }` with 5-hour and weekly token windows.
+//! The base URL is configurable (z.ai global vs. open.bigmodel.cn for CN).
 
 use serde_json::Value;
 use std::time::Duration;
 
 use super::{KeyVal, VendorStatus};
 
-pub const DEFAULT_ENDPOINT: &str = "https://api.z.ai/api/paas/v4/usage";
+pub const DEFAULT_ENDPOINT: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
+
+/// Endpoints from older builds that should be upgraded to DEFAULT_ENDPOINT.
+pub const STALE_ENDPOINTS: [&str; 2] = [
+    "https://api.z.ai/api/paas/v4/usage",
+    "https://open.bigmodel.cn/api/paas/v4/usage",
+];
 
 pub async fn fetch(api_key: &str, endpoint: &str) -> VendorStatus {
     let url = if endpoint.is_empty() { DEFAULT_ENDPOINT } else { endpoint };
@@ -24,8 +31,10 @@ pub async fn fetch(api_key: &str, endpoint: &str) -> VendorStatus {
 
     let resp = client
         .get(url)
-        .bearer_auth(api_key)
-        .header("Accept", "application/json")
+        // z.ai monitor API: raw token, NO "Bearer" prefix.
+        .header("Authorization", api_key)
+        .header("Accept-Language", "en-US,en")
+        .header("Content-Type", "application/json")
         .send()
         .await;
 
@@ -33,7 +42,12 @@ pub async fn fetch(api_key: &str, endpoint: &str) -> VendorStatus {
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
-                return VendorStatus::failed(format!("HTTP {} from {url}", status.as_u16()));
+                let hint = match status.as_u16() {
+                    401 | 403 => " (check the key — use your GLM Coding Plan token)",
+                    404 => " (wrong endpoint — expected /api/monitor/usage/quota/limit)",
+                    _ => "",
+                };
+                return VendorStatus::failed(format!("HTTP {}{hint}", status.as_u16()));
             }
             match r.json::<Value>().await {
                 Ok(v) => parse(&v),
@@ -44,63 +58,91 @@ pub async fn fetch(api_key: &str, endpoint: &str) -> VendorStatus {
     }
 }
 
-/// Pure parser — pulls balance / usage from a variety of likely shapes.
+/// Pure parser for the monitor quota/limit response.
 pub fn parse(v: &Value) -> VendorStatus {
-    // Some APIs nest under "data".
     let root = if v.get("data").map(|d| d.is_object()).unwrap_or(false) {
         &v["data"]
     } else {
         v
     };
 
-    let num = |keys: &[&str]| -> Option<f64> {
-        for k in keys {
-            if let Some(n) = root.get(*k).and_then(value_as_f64) {
-                return Some(n);
-            }
-        }
-        None
+    let Some(limits) = root.get("limits").and_then(|l| l.as_array()) else {
+        return shape_error("no `data.limits` array in response");
     };
 
-    let balance = num(&["balance", "remaining", "available_balance", "credit"]);
-    let used = num(&["total_usage", "usage", "used", "total_cost", "amount"]);
-    let tokens = num(&["total_tokens", "tokens", "prompt_tokens"]);
-
-    if balance.is_none() && used.is_none() && tokens.is_none() {
-        return VendorStatus {
-            configured: true,
-            ok: false,
-            error: Some("no recognized balance/usage fields in response".to_string()),
-            primary: "—".to_string(),
-            secondary: "unexpected shape".to_string(),
-            detail: Vec::new(),
-        };
-    }
-
     let mut detail = Vec::new();
-    if let Some(b) = balance {
-        detail.push(KeyVal { label: "Balance".to_string(), value: fmt_money(b) });
-    }
-    if let Some(u) = used {
-        detail.push(KeyVal { label: "Used".to_string(), value: fmt_money(u) });
-    }
-    if let Some(t) = tokens {
-        detail.push(KeyVal { label: "Tokens".to_string(), value: fmt_count(t) });
+    let mut five_h: Option<f64> = None;
+    let mut weekly: Option<f64> = None;
+
+    for lim in limits {
+        let typ = lim.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let used = lim.get("currentValue").and_then(value_as_f64);
+        let total = lim.get("total").and_then(value_as_f64);
+        let pct = lim
+            .get("percentage")
+            .and_then(value_as_f64)
+            .or_else(|| match (used, total) {
+                (Some(u), Some(t)) if t > 0.0 => Some(u / t * 100.0),
+                _ => None,
+            });
+
+        let tl = typ.to_lowercase();
+        let (label, is_5h, is_week) = if tl.contains("5h") || tl.contains("5 h") || tl.contains("5-h")
+        {
+            ("5-hour", true, false)
+        } else if tl.contains("week") {
+            ("Weekly", false, true)
+        } else if tl.contains("mcp") {
+            ("MCP", false, false)
+        } else if typ.is_empty() {
+            continue;
+        } else {
+            (typ, false, false)
+        };
+
+        let Some(p) = pct else { continue };
+        let value = match (used, total) {
+            (Some(u), Some(t)) => format!("{} / {} · {:.0}%", fmt_count(u), fmt_count(t), p),
+            _ => format!("{:.0}% used", p),
+        };
+        detail.push(KeyVal { label: label.to_string(), value });
+        if is_5h {
+            five_h = Some(p);
+        }
+        if is_week {
+            weekly = Some(p);
+        }
     }
 
-    let primary = balance
-        .map(fmt_money)
-        .or_else(|| used.map(fmt_money))
-        .or_else(|| tokens.map(fmt_count))
-        .unwrap_or_else(|| "—".to_string());
+    if detail.is_empty() {
+        return shape_error("no recognized quota limits in response");
+    }
+
+    // Headline: weekly usage if present, else the 5-hour window.
+    let (used, label) = match (weekly, five_h) {
+        (Some(w), _) => (w, "weekly quota used"),
+        (None, Some(f)) => (f, "5-hour quota used"),
+        _ => (0.0, "quota"),
+    };
 
     VendorStatus {
         configured: true,
         ok: true,
         error: None,
-        primary,
-        secondary: if balance.is_some() { "balance".to_string() } else { "usage".to_string() },
+        primary: format!("{:.0}% used", used.clamp(0.0, 100.0)),
+        secondary: label.to_string(),
         detail,
+    }
+}
+
+fn shape_error(msg: &str) -> VendorStatus {
+    VendorStatus {
+        configured: true,
+        ok: false,
+        error: Some(msg.to_string()),
+        primary: "—".to_string(),
+        secondary: "unexpected shape".to_string(),
+        detail: Vec::new(),
     }
 }
 
@@ -112,12 +154,10 @@ fn value_as_f64(v: &Value) -> Option<f64> {
     }
 }
 
-fn fmt_money(n: f64) -> String {
-    format!("${:.2}", n)
-}
-
 fn fmt_count(n: f64) -> String {
-    if n >= 1e6 {
+    if n >= 1e9 {
+        format!("{:.1}B", n / 1e9)
+    } else if n >= 1e6 {
         format!("{:.1}M", n / 1e6)
     } else if n >= 1e3 {
         format!("{:.0}K", n / 1e3)
@@ -132,27 +172,45 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parses_balance_shape() {
-        let v = json!({ "balance": 42.5, "total_usage": 7.25 });
+    fn parses_five_hour_and_weekly_quota() {
+        let v = json!({
+            "data": { "limits": [
+                { "type": "Token usage(5h)", "percentage": 40, "currentValue": 16000000, "total": 40000000 },
+                { "type": "Token usage(Weekly)", "percentage": 12.5, "currentValue": 50000000, "total": 400000000 }
+            ] }
+        });
         let s = parse(&v);
-        assert!(s.ok);
-        assert_eq!(s.primary, "$42.50");
+        assert!(s.ok, "should parse ok");
+        assert!(s.primary.ends_with("% used"));
+        assert_eq!(s.secondary, "weekly quota used");
         assert_eq!(s.detail.len(), 2);
+        assert!(s.detail[0].value.contains("16.0M / 40.0M"));
     }
 
     #[test]
-    fn parses_nested_data_and_string_numbers() {
-        let v = json!({ "data": { "remaining": "13.00", "total_tokens": 1500000 } });
+    fn falls_back_to_five_hour_when_no_weekly() {
+        let v = json!({ "data": { "limits": [
+            { "type": "Token usage(5h)", "percentage": 25, "currentValue": 10000000, "total": 40000000 }
+        ] } });
         let s = parse(&v);
         assert!(s.ok);
-        assert_eq!(s.primary, "$13.00");
-        assert!(s.detail.iter().any(|d| d.value == "1.5M"));
+        assert_eq!(s.secondary, "5-hour quota used");
+    }
+
+    #[test]
+    fn computes_percentage_when_absent() {
+        let v = json!({ "data": { "limits": [
+            { "type": "Token usage(Weekly)", "currentValue": "100", "total": "400" }
+        ] } });
+        let s = parse(&v);
+        assert!(s.ok);
+        // 100/400 = 25% used -> 75% left
+        assert!(s.detail[0].value.contains("25%"));
     }
 
     #[test]
     fn unrecognized_shape_is_not_ok() {
-        let v = json!({ "foo": "bar" });
-        let s = parse(&v);
+        let s = parse(&json!({ "foo": "bar" }));
         assert!(!s.ok);
         assert!(s.error.is_some());
     }

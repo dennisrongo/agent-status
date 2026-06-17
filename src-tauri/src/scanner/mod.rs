@@ -5,7 +5,7 @@
 //! All file I/O here is synchronous; callers must run it via
 //! `tokio::task::spawn_blocking` from async commands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Duration, Utc};
@@ -34,6 +34,9 @@ pub struct UsageSnapshot {
     /// Live vendor-side usage, filled in by the command layer after the scan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor: Option<crate::vendors::VendorReport>,
+    /// Which providers are present locally, filled in by the command layer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detection: Option<crate::vendors::Detection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +69,9 @@ pub struct Bucket {
     pub reset: String,
     pub status: String,
     pub status_label: String,
+    /// True when sourced from Claude's live usage API rather than the local estimate.
+    #[serde(default)]
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,6 +305,13 @@ pub fn scan(
     let files = find_jsonl(claude_root);
     let files_scanned = files.len();
 
+    // Claude Code writes the same assistant message into multiple JSONL files
+    // when a session is resumed, compacted, or forked into a sidechain. Counting
+    // every line double-counts those tokens (≈40% inflation in practice), so we
+    // dedupe on the API's stable identity — `message.id` + `requestId` — the same
+    // key ccusage uses. Records missing both ids are always kept.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
     for fp in &files {
         let project = fp
             .parent()
@@ -319,6 +332,14 @@ pub fn scan(
             let Some(ts) = v["timestamp"].as_str() else { continue };
             let Ok(dt) = DateTime::parse_from_rfc3339(ts) else { continue };
             let dt = dt.with_timezone(&Utc);
+
+            // Skip a record we've already counted under a different file. Only
+            // dedupe when both ids are present, mirroring ccusage.
+            if let (Some(id), Some(req)) = (msg["id"].as_str(), v["requestId"].as_str()) {
+                if !seen.insert((id.to_string(), req.to_string())) {
+                    continue;
+                }
+            }
 
             let model = msg["model"].as_str().unwrap_or("");
             let family = family_of(model);
@@ -415,6 +436,7 @@ fn build_snapshot(
             reset: countdown(reset, now),
             status: status.to_string(),
             status_label: status_label.to_string(),
+            live: false,
         }
     };
 
@@ -589,6 +611,7 @@ fn build_snapshot(
         providers,
         glm,
         vendor: None,
+        detection: None,
     }
 }
 
@@ -701,6 +724,31 @@ mod tests {
         assert_eq!(snap.models.len(), 3);
         // six session rows (padded)
         assert_eq!(snap.sessions.len(), 6);
+    }
+
+    #[test]
+    fn dedupes_repeated_message_request_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-06-17T19:00:00.000Z";
+
+        // Same (message.id, requestId) appearing twice — e.g. a resumed session
+        // copied into a second file — must be counted once.
+        let line = format!(
+            r#"{{"timestamp":"{recent}","sessionId":"abc12345","requestId":"req_1","message":{{"id":"msg_1","model":"claude-opus-4-7","usage":{{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        );
+        write_jsonl(&claude, "proj-a", &[&line]);
+        write_jsonl(&claude, "proj-b", &[&line]);
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        assert_eq!(snap.meta.files_scanned, 2);
+        // 300 tokens counted once, not 600.
+        assert_eq!(snap.kpi.session_tokens, "300");
     }
 
     #[test]

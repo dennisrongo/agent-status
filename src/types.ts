@@ -18,6 +18,7 @@ export interface Bucket {
   reset: string;
   status: "ok" | "warn" | "danger";
   statusLabel: string;
+  live?: boolean;
 }
 
 export interface Limits {
@@ -94,6 +95,11 @@ export interface VendorReport {
   anthropic: VendorStatus;
 }
 
+export interface Detection {
+  claude: boolean;
+  glm: boolean;
+}
+
 export interface UsageSnapshot {
   meta: Meta;
   limits: Limits;
@@ -104,6 +110,7 @@ export interface UsageSnapshot {
   providers: Provider[];
   glm: Glm;
   vendor?: VendorReport;
+  detection?: Detection;
 }
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
@@ -114,4 +121,5 @@ export interface SettingsView {
   glmEndpoint: string;
   glmKeySet: boolean;
   anthropicKeySet: boolean;
+  liveClaude: boolean;
 }

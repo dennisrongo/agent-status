@@ -37,8 +37,12 @@ machine-uid = "0.5"
 tempfile = "3"
 pretty_assertions = "1"
 
+# incremental = false works around a linker error ("_anon.*.llvm.* symbol(s) not
+# found for architecture arm64") caused by an interaction between Rust's
+# incremental compilation and Xcode 26's new linker (ld-prime / ld-1230.1).
 [profile.dev]
 opt-level = 1
+incremental = false
 
 [profile.release]
 lto = "fat"

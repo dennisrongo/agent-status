@@ -4,7 +4,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
 
@@ -47,5 +47,20 @@ fn toggle_window(app: &AppHandle) {
         let _ = window.move_window(Position::TrayCenter);
         let _ = window.show();
         let _ = window.set_focus();
+        refresh_on_open(app);
     }
+}
+
+/// Pull fresh data the moment the dropdown opens, so the numbers are current
+/// without waiting for the next interval tick.
+pub fn refresh_on_open(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match crate::commands::usage::collect(&handle).await {
+            Ok(snapshot) => {
+                let _ = handle.emit("usage-updated", &snapshot);
+            }
+            Err(e) => tracing::warn!("refresh-on-open failed: {e}"),
+        }
+    });
 }

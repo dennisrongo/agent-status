@@ -33,6 +33,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
+                tray::refresh_on_open(app);
             }
         }))
         .plugin(tauri_plugin_positioner::init())
@@ -45,7 +46,6 @@ pub fn run() {
 
             // Load settings and seed managed state.
             let loaded = settings::load(&handle);
-            let refresh_secs = loaded.refresh_secs.max(15);
             app.manage(Mutex::new(AppState::new(loaded)));
 
             // Tray + dropdown.
@@ -59,13 +59,30 @@ pub fn run() {
             let bg = handle.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    match commands::usage::collect(&bg).await {
-                        Ok(snapshot) => {
-                            let _ = bg.emit("usage-updated", &snapshot);
+                    // Only poll while the dropdown is open — no background API
+                    // calls when the window is hidden. Opening the window
+                    // triggers its own immediate refresh (see tray.rs).
+                    let visible = bg
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_visible().ok())
+                        .unwrap_or(false);
+                    if visible {
+                        match commands::usage::collect(&bg).await {
+                            Ok(snapshot) => {
+                                let _ = bg.emit("usage-updated", &snapshot);
+                            }
+                            Err(e) => tracing::warn!("background refresh failed: {e}"),
                         }
-                        Err(e) => tracing::warn!("background refresh failed: {e}"),
                     }
-                    tokio::time::sleep(Duration::from_secs(refresh_secs)).await;
+                    // Re-read the interval each tick so changes from Settings
+                    // take effect on the next cycle without a restart.
+                    let secs = bg
+                        .state::<Mutex<AppState>>()
+                        .lock()
+                        .map(|g| g.settings.refresh_secs)
+                        .unwrap_or(30)
+                        .clamp(settings::MIN_REFRESH_SECS, settings::MAX_REFRESH_SECS);
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
                 }
             });
 
@@ -75,6 +92,8 @@ pub fn run() {
             commands::get_usage,
             commands::get_settings,
             commands::set_plan,
+            commands::set_live_claude,
+            commands::set_refresh_secs,
             commands::set_glm_endpoint,
             commands::set_api_key,
             commands::clear_api_key,

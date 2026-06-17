@@ -11,6 +11,10 @@ use crate::vendors::glm;
 
 const SETTINGS_FILE: &str = "settings.json";
 
+/// Allowed bounds for the auto-refresh interval (seconds).
+pub const MIN_REFRESH_SECS: u64 = 10;
+pub const MAX_REFRESH_SECS: u64 = 3600;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -24,16 +28,20 @@ pub struct Settings {
     pub zai_key: Option<EncryptedSecret>,
     /// Encrypted Anthropic admin API key.
     pub anthropic_key: Option<EncryptedSecret>,
+    /// Use Claude's live usage API (reads the Claude Code OAuth token) for the
+    /// Overview meters instead of the local token estimate.
+    pub live_claude: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             plan: "max5x".to_string(),
-            refresh_secs: 60,
+            refresh_secs: 30,
             glm_endpoint: glm::DEFAULT_ENDPOINT.to_string(),
             zai_key: None,
             anthropic_key: None,
+            live_claude: true,
         }
     }
 }
@@ -47,6 +55,7 @@ pub struct SettingsView {
     pub glm_endpoint: String,
     pub glm_key_set: bool,
     pub anthropic_key_set: bool,
+    pub live_claude: bool,
 }
 
 impl From<&Settings> for SettingsView {
@@ -57,18 +66,28 @@ impl From<&Settings> for SettingsView {
             glm_endpoint: s.glm_endpoint.clone(),
             glm_key_set: s.zai_key.is_some(),
             anthropic_key_set: s.anthropic_key.is_some(),
+            live_claude: s.live_claude,
         }
     }
 }
 
 pub fn load(app: &AppHandle) -> Settings {
-    match storage::load_json::<Settings>(app, SETTINGS_FILE) {
+    let mut settings = match storage::load_json::<Settings>(app, SETTINGS_FILE) {
         Ok(Some(s)) => s,
         Ok(None) => Settings::default(),
         Err(e) => {
             tracing::warn!("failed to load settings, using defaults: {e}");
             Settings::default()
         }
+    };
+    migrate(&mut settings);
+    settings
+}
+
+/// Upgrade settings written by older builds (e.g. the stale z.ai endpoint).
+fn migrate(s: &mut Settings) {
+    if s.glm_endpoint.trim().is_empty() || glm::STALE_ENDPOINTS.contains(&s.glm_endpoint.as_str()) {
+        s.glm_endpoint = glm::DEFAULT_ENDPOINT.to_string();
     }
 }
 

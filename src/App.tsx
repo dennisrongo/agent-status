@@ -5,7 +5,7 @@ import { Settings } from "./components/Settings";
 import { VendorCard } from "./components/VendorCard";
 import { WeekChart } from "./components/WeekChart";
 import { useUsage } from "./hooks/useUsage";
-import type { PlanKey } from "./types";
+import type { Glm, PlanKey, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings";
 
@@ -16,8 +16,23 @@ const PLANS: { key: PlanKey; label: string }[] = [
 ];
 
 export default function App() {
-  const { snapshot, plan, setPlan, refresh, isLoading, error } = useUsage();
+  const {
+    snapshot,
+    settings,
+    setPlan,
+    setApiKey,
+    clearApiKey,
+    setGlmEndpoint,
+    setRefreshSecs,
+    setLiveClaude,
+    refresh,
+    isLoading,
+    error,
+    keyError,
+  } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
+  const [provider, setProvider] = useState<"claude" | "glm">("claude");
+  const plan: PlanKey = settings?.plan ?? "max5x";
 
   if (!snapshot) {
     return (
@@ -34,6 +49,18 @@ export default function App() {
   }
 
   const { meta, limits, week, models, sessions, providers, glm, kpi } = snapshot;
+
+  // Only show a provider tab when that provider is actually present locally
+  // (installed CLI / login, configured key, or local activity). Fall back to
+  // showing both if the backend didn't report detection.
+  const showClaude = snapshot.detection?.claude ?? true;
+  const showGlm = snapshot.detection?.glm ?? true;
+  const available: ("claude" | "glm")[] = [
+    ...(showClaude ? (["claude"] as const) : []),
+    ...(showGlm ? (["glm"] as const) : []),
+  ];
+  const providerTabs = available.length ? available : (["claude", "glm"] as const);
+  const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
 
   return (
     <main className="widget">
@@ -74,7 +101,7 @@ export default function App() {
       </header>
 
       <nav className="tabs">
-        {(["overview", "sessions", "providers"] as Tab[]).map((t) => (
+        {(["overview", "sessions", "providers", "settings"] as Tab[]).map((t) => (
           <button
             key={t}
             className="tab"
@@ -89,62 +116,84 @@ export default function App() {
       <div className="body">
         {tab === "overview" && (
           <section className="panel">
-            <div className="kpis">
-              <div className="kpi accent">
-                <div className="k-label">Session left</div>
-                <div className="k-num">{limits.buckets[0].leftPct}%</div>
-                <div className="k-sub">resets {limits.buckets[0].reset}</div>
+            {providerTabs.length > 1 && (
+              <div className="seg" role="tablist">
+                {providerTabs.map((p) => (
+                  <button
+                    key={p}
+                    className="seg-btn"
+                    aria-selected={eff === p}
+                    onClick={() => setProvider(p)}
+                  >
+                    <span className={`seg-dot ${p}`} />{" "}
+                    {p === "claude" ? "Claude" : "GLM"}
+                  </button>
+                ))}
               </div>
-              <div className="kpi ok">
-                <div className="k-label">Week left</div>
-                <div className="k-num">{limits.buckets[1].leftPct}%</div>
-                <div className="k-sub">all models</div>
-              </div>
-              <div className="kpi">
-                <div className="k-label">Opus left</div>
-                <div className="k-num">{limits.buckets[2].leftPct}%</div>
-                <div className="k-sub">resets {limits.buckets[2].reset}</div>
-              </div>
-            </div>
+            )}
 
-            <div className="sec-head">
-              <h2>What’s left</h2>
-              <span className="meta">{limits.planLabel} plan</span>
-            </div>
-            <div className="meters">
-              {limits.buckets.map((b) => (
-                <Meter bucket={b} key={b.name} />
-              ))}
-            </div>
+            {eff === "claude" && (
+              <>
+                <div className="kpis">
+                  {limits.buckets.slice(0, 3).map((b, i) => (
+                    <div className={`kpi ${["accent", "ok", ""][i]}`} key={b.name}>
+                      <div className="k-label">{tileLabel(b.name)}</div>
+                      <div className="k-num">{b.usedPct}%</div>
+                      <div className="k-sub">resets {b.reset}</div>
+                    </div>
+                  ))}
+                </div>
 
-            <div className="sec-head">
-              <h2>Last 7 days</h2>
-              <span className="meta">tokens / day</span>
-            </div>
-            <WeekChart week={week} />
-
-            <div className="sec-head">
-              <h2>By model</h2>
-              <span className="meta">all-time tokens</span>
-            </div>
-            <div className="models">
-              {models.map((m) => (
-                <div className="model-row" key={m.key}>
-                  <span className="name">{m.name}</span>
-                  <div className="mtrack">
-                    <div className={`mfill ${m.key}`} style={{ width: `${m.pct}%` }} />
-                  </div>
-                  <span className="mval">
-                    <b>{m.tokens}</b> · {m.cost}
+                <div className="sec-head">
+                  <h2>Usage</h2>
+                  <span className="meta">
+                    {limits.planLabel === "live" ? "live · Claude" : `${limits.planLabel} plan · est.`}
                   </span>
                 </div>
-              ))}
-            </div>
+                <div className="meters">
+                  {limits.buckets.map((b) => (
+                    <Meter bucket={b} key={b.name} />
+                  ))}
+                </div>
 
-            <div className="note">
-              <InfoIcon />
-              <p>{limits.estimateNote}</p>
-            </div>
+                <div className="sec-head">
+                  <h2>Last 7 days</h2>
+                  <span className="meta">tokens / day</span>
+                </div>
+                <WeekChart week={week} />
+
+                <div className="sec-head">
+                  <h2>By model</h2>
+                  <span className="meta">all-time tokens</span>
+                </div>
+                <div className="models">
+                  {models.map((m) => (
+                    <div className="model-row" key={m.key}>
+                      <span className="name">{m.name}</span>
+                      <div className="mtrack">
+                        <div className={`mfill ${m.key}`} style={{ width: `${m.pct}%` }} />
+                      </div>
+                      <span className="mval">
+                        <b>{m.tokens}</b> · {m.cost}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="note">
+                  <InfoIcon />
+                  <p>{limits.estimateNote}</p>
+                </div>
+              </>
+            )}
+
+            {eff === "glm" && (
+              <GlmOverview
+                vendor={snapshot.vendor?.glm}
+                glm={glm}
+                onConnect={() => setTab("settings")}
+              />
+            )}
           </section>
         )}
 
@@ -209,6 +258,19 @@ export default function App() {
               ))}
             </div>
 
+            {snapshot.vendor && (
+              <>
+                <div className="sec-head">
+                  <h2>Live vendor usage</h2>
+                  <span className="meta">via API key</span>
+                </div>
+                <div className="prov">
+                  <VendorCard name="Anthropic (org)" status={snapshot.vendor.anthropic} />
+                  <VendorCard name="z.ai (GLM)" status={snapshot.vendor.glm} />
+                </div>
+              </>
+            )}
+
             <div className="sec-head">
               <h2>GLM / z.ai detail</h2>
               <span className="meta">local MCP logs</span>
@@ -229,6 +291,18 @@ export default function App() {
             </div>
           </section>
         )}
+
+        {tab === "settings" && settings && (
+          <Settings
+            settings={settings}
+            setApiKey={setApiKey}
+            clearApiKey={clearApiKey}
+            setGlmEndpoint={setGlmEndpoint}
+            setRefreshSecs={setRefreshSecs}
+            setLiveClaude={setLiveClaude}
+            keyError={keyError}
+          />
+        )}
       </div>
 
       <footer className="foot">
@@ -244,6 +318,83 @@ export default function App() {
   );
 }
 
+function GlmOverview({
+  vendor,
+  glm,
+  onConnect,
+}: {
+  vendor: VendorStatus | undefined;
+  glm: Glm;
+  onConnect: () => void;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+
+  return (
+    <>
+      <div className="sec-head">
+        <h2>z.ai quota</h2>
+        <span className="meta">coding plan · via API key</span>
+      </div>
+
+      {live && vendor ? (
+        <>
+          <div className="kpis glm-kpis">
+            <div className="kpi accent">
+              <div className="k-label">{vendor.secondary || "balance"}</div>
+              <div className="k-num">{vendor.primary}</div>
+              <div className="k-sub">live</div>
+            </div>
+          </div>
+          {vendor.detail.length > 0 && (
+            <div className="budget" style={{ marginTop: 9 }}>
+              {vendor.detail.map((d) => (
+                <div className="budget-foot" key={d.label} style={{ marginTop: 0 }}>
+                  <span className="used">{d.label}</span>
+                  <span className="rem">{d.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="connect-card">
+          <p className="connect-title">
+            {vendor?.configured
+              ? `Couldn’t reach z.ai${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No GLM usage data yet"}
+          </p>
+          <p className="connect-sub">
+            z.ai exposes no per-session tokens locally. Add your GLM Coding Plan API
+            key to pull real 5-hour &amp; weekly quota.
+          </p>
+          <button className="btn primary" onClick={onConnect}>
+            Add API key →
+          </button>
+        </div>
+      )}
+
+      <div className="sec-head">
+        <h2>Local activity</h2>
+        <span className="meta">MCP logs</span>
+      </div>
+      <div className="budget">
+        <div className="budget-foot" style={{ marginTop: 0 }}>
+          <span className="used">{glm.sessions} server sessions</span>
+          <span className="rem">{glm.activeDays} active days</span>
+        </div>
+        <div className="budget-foot">
+          <span className="used">last seen</span>
+          <span className="rem">{glm.last}</span>
+        </div>
+      </div>
+      <div className="note">
+        <InfoIcon />
+        <p>{glm.note}</p>
+      </div>
+    </>
+  );
+}
+
 function InfoIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -251,6 +402,13 @@ function InfoIcon() {
       <path d="M12 16v-4M12 8h.01" />
     </svg>
   );
+}
+
+function tileLabel(name: string): string {
+  if (name.startsWith("Session")) return "Session";
+  if (name.includes("all models")) return "Week";
+  const scope = name.split("·").pop()?.trim();
+  return scope ? `${scope} wk` : name;
 }
 
 function fmtTok(n: number): string {

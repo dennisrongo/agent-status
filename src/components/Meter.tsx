@@ -19,11 +19,15 @@ export function Meter({ bucket }: { bucket: Bucket }) {
         />
       </div>
       <div className="meter-foot">
-        <span className="mu">
-          <b>{bucket.usedFmt}</b> / {bucket.limitFmt} used
-        </span>
+        {bucket.live ? (
+          <span className="mu live-tag">● live · Claude</span>
+        ) : (
+          <span className="mu">
+            <b>{bucket.usedFmt}</b> / {bucket.limitFmt}
+          </span>
+        )}
         <span className="ml2">
-          <b>{bucket.leftPct}%</b> left
+          <b>{bucket.usedPct}%</b> used
         </span>
       </div>
     </div>

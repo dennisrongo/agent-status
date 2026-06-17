@@ -15,6 +15,8 @@ export function useUsage() {
   const usageCmd = useTauriCommand<UsageSnapshot>("get_usage");
   const settingsCmd = useTauriCommand<SettingsView>("get_settings");
   const planCmd = useTauriCommand<SettingsView>("set_plan");
+  const refreshSecsCmd = useTauriCommand<SettingsView>("set_refresh_secs");
+  const liveClaudeCmd = useTauriCommand<SettingsView>("set_live_claude");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -36,6 +38,25 @@ export function useUsage() {
       }
     },
     [planCmd, refresh],
+  );
+
+  const setRefreshSecs = useCallback(
+    async (secs: number) => {
+      const updated = await refreshSecsCmd.execute({ secs });
+      if (updated) setSettings(updated);
+    },
+    [refreshSecsCmd],
+  );
+
+  const setLiveClaude = useCallback(
+    async (enabled: boolean) => {
+      const updated = await liveClaudeCmd.execute({ enabled });
+      if (updated) {
+        setSettings(updated);
+        await refresh();
+      }
+    },
+    [liveClaudeCmd, refresh],
   );
 
   const setGlmEndpoint = useCallback(
@@ -92,6 +113,8 @@ export function useUsage() {
     snapshot,
     settings,
     setPlan,
+    setRefreshSecs,
+    setLiveClaude,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,

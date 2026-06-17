@@ -7,12 +7,73 @@ interface Props {
   setApiKey: (provider: "glm" | "anthropic", key: string) => Promise<SettingsView | null>;
   clearApiKey: (provider: "glm" | "anthropic") => Promise<void>;
   setGlmEndpoint: (endpoint: string) => Promise<void>;
+  setRefreshSecs: (secs: number) => Promise<void>;
+  setLiveClaude: (enabled: boolean) => Promise<void>;
   keyError: string | null;
 }
 
-export function Settings({ settings, setApiKey, clearApiKey, setGlmEndpoint, keyError }: Props) {
+const REFRESH_OPTIONS = [
+  { secs: 10, label: "10 seconds" },
+  { secs: 15, label: "15 seconds" },
+  { secs: 30, label: "30 seconds" },
+  { secs: 60, label: "1 minute" },
+  { secs: 120, label: "2 minutes" },
+  { secs: 300, label: "5 minutes" },
+];
+
+export function Settings({
+  settings,
+  setApiKey,
+  clearApiKey,
+  setGlmEndpoint,
+  setRefreshSecs,
+  setLiveClaude,
+  keyError,
+}: Props) {
   return (
     <section className="panel">
+      <div className="sec-head">
+        <h2>Claude usage</h2>
+        <span className="meta">{settings.liveClaude ? "live" : "estimate"}</span>
+      </div>
+      <div className="key-row">
+        <label className="toggle-row">
+          <span>
+            <span className="key-label">Live usage from Claude Code</span>
+            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
+              Reads your Claude Code login to show real session/weekly %. Off = local token estimate.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            className="toggle"
+            checked={settings.liveClaude}
+            onChange={(e) => setLiveClaude(e.target.checked)}
+          />
+        </label>
+      </div>
+
+      <div className="sec-head">
+        <h2>Auto-refresh</h2>
+        <span className="meta">every {settings.refreshSecs}s</span>
+      </div>
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Refresh interval</span>
+        </div>
+        <select
+          className="interval-select"
+          value={refreshValue(settings.refreshSecs)}
+          onChange={(e) => setRefreshSecs(Number(e.target.value))}
+        >
+          {REFRESH_OPTIONS.map((o) => (
+            <option key={o.secs} value={o.secs}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="sec-head">
         <h2>API keys</h2>
         <span className="meta">stored encrypted</span>
@@ -20,7 +81,8 @@ export function Settings({ settings, setApiKey, clearApiKey, setGlmEndpoint, key
 
       <KeyRow
         label="z.ai (GLM)"
-        hint="sk-… — for real GLM balance/usage"
+        hint="paste your GLM Coding Plan token"
+        sub="From your GLM Coding Plan subscription — used to pull real 5-hour & weekly quota. A standard pay-as-you-go API key won't return plan usage."
         isSet={settings.glmKeySet}
         onSave={(k) => setApiKey("glm", k)}
         onClear={() => clearApiKey("glm")}
@@ -57,15 +119,24 @@ export function Settings({ settings, setApiKey, clearApiKey, setGlmEndpoint, key
   );
 }
 
+// Snap a stored interval to the nearest preset so the select always shows a value.
+function refreshValue(secs: number): number {
+  return REFRESH_OPTIONS.reduce((best, o) =>
+    Math.abs(o.secs - secs) < Math.abs(best.secs - secs) ? o : best,
+  ).secs;
+}
+
 function KeyRow({
   label,
   hint,
+  sub,
   isSet,
   onSave,
   onClear,
 }: {
   label: string;
   hint: string;
+  sub?: string;
   isSet: boolean;
   onSave: (key: string) => Promise<unknown>;
   onClear: () => Promise<void>;
@@ -81,6 +152,11 @@ function KeyRow({
           {isSet ? "● set" : "○ not set"}
         </span>
       </div>
+      {sub && (
+        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+          {sub}
+        </span>
+      )}
       <div className="key-input">
         <input
           type="password"
