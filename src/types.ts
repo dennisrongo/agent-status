@@ -1,0 +1,117 @@
+// Mirrors the Rust `UsageSnapshot` (serialized camelCase).
+
+export interface Meta {
+  generated: string;
+  windowFirst: string;
+  windowLast: string;
+  filesScanned: number;
+}
+
+export interface Bucket {
+  name: string;
+  sub: string;
+  usedFmt: string;
+  usedPct: number;
+  leftPct: number;
+  leftFmt: string;
+  limitFmt: string;
+  reset: string;
+  status: "ok" | "warn" | "danger";
+  statusLabel: string;
+}
+
+export interface Limits {
+  planLabel: string;
+  estimateNote: string;
+  buckets: Bucket[];
+}
+
+export interface Kpi {
+  sessionTokens: string;
+  sessionCost: string;
+  weekTokens: string;
+  weekCost: string;
+  totalTokens: string;
+  totalCost: string;
+}
+
+export interface WeekDay {
+  day: string;
+  date: string;
+  tokFmt: string;
+  costFmt: string;
+  barPct: number;
+}
+
+export interface ModelRow {
+  name: string;
+  key: string;
+  tokens: string;
+  cost: string;
+  pct: number;
+}
+
+export interface SessionRow {
+  id: string;
+  project: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  when: string;
+}
+
+export interface Provider {
+  name: string;
+  status: string;
+  tokens: string;
+  cost: string;
+  sessions: number;
+}
+
+export interface Glm {
+  sessions: number;
+  activeDays: number;
+  last: string;
+  note: string;
+}
+
+export interface VendorKeyVal {
+  label: string;
+  value: string;
+}
+
+export interface VendorStatus {
+  configured: boolean;
+  ok: boolean;
+  error: string | null;
+  primary: string;
+  secondary: string;
+  detail: VendorKeyVal[];
+}
+
+export interface VendorReport {
+  glm: VendorStatus;
+  anthropic: VendorStatus;
+}
+
+export interface UsageSnapshot {
+  meta: Meta;
+  limits: Limits;
+  kpi: Kpi;
+  week: WeekDay[];
+  models: ModelRow[];
+  sessions: SessionRow[];
+  providers: Provider[];
+  glm: Glm;
+  vendor?: VendorReport;
+}
+
+export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
+
+export interface SettingsView {
+  plan: PlanKey;
+  refreshSecs: number;
+  glmEndpoint: string;
+  glmKeySet: boolean;
+  anthropicKeySet: boolean;
+}
