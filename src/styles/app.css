@@ -217,5 +217,11 @@ body {
 .update-btn:hover:not(:disabled) { filter: brightness(1.08); }
 .update-btn:disabled { opacity: .55; cursor: progress; }
 
+.update-check { display: flex; align-items: center; gap: 10px; }
+.update-check .btn { flex: none; white-space: nowrap; min-width: 132px; text-align: center; transition: color .15s, border-color .15s, background .15s; }
+.update-status { font-size: 11px; color: var(--muted); min-width: 0; }
+.update-status.err { color: var(--danger); }
+.version-foot { text-align: center; color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .02em; padding: 12px 0 2px; }
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }

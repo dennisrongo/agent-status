@@ -117,34 +117,48 @@ up** — losing it means existing installs can never auto-update again.
 
 To ship an update:
 
-1. Bump `version` in `package.json`, `src-tauri/Cargo.toml`, and
-   `src-tauri/tauri.conf.json` (keep them in sync), then commit + tag `vX.Y.Z`.
-2. Build: `./scripts/release-mac.sh` (signs, notarizes, **and** produces the
-   updater payload because the updater key is in `.env`).
-3. Create a GitHub release for the tag and upload:
-   - the **`.dmg`** — what humans download for a fresh install;
-   - the **`.app.tar.gz`** and **`.app.tar.gz.sig`** — the updater payload;
-   - a **`latest.json`** manifest:
+1. Bump `version` in **`package.json`**, **`src-tauri/Cargo.toml`**, and
+   **`src-tauri/tauri.conf.json`** (keep all three in sync — `tauri.conf.json` is
+   the value shown in the app and written into `latest.json`). Commit.
+2. Run **`./scripts/release-mac.sh --publish`**. This signs + notarizes, produces
+   the updater payload, **generates `latest.json` automatically** from the new
+   `.sig`, then creates the GitHub release `vX.Y.Z` (or uploads to it if it already
+   exists) and verifies the public endpoint returns HTTP 200.
 
-   ```json
-   {
-     "version": "X.Y.Z",
-     "notes": "What changed",
-     "pub_date": "2026-06-17T00:00:00Z",
-     "platforms": {
-       "darwin-universal": {
-         "signature": "<contents of Agent Usage Monitor.app.tar.gz.sig>",
-         "url": "https://github.com/dennisrongo/agent-status/releases/download/vX.Y.Z/Agent.Usage.Monitor.app.tar.gz"
-       }
-     }
-   }
-   ```
+That's it — no hand-edited manifest. Running without `--publish` does everything
+except touch GitHub, leaving the artifacts + `latest.json` under
+`src-tauri/target/<triple>/release/bundle/` for you to upload manually.
 
-   (`darwin-aarch64` / `darwin-x86_64` keys also work; `darwin-universal`
-   covers both for a universal build.)
+The generated manifest looks like:
 
-Installed apps poll `latest.json`, and when its `version` is newer they show the
-in-app **"Update & restart"** banner.
+```json
+{
+  "version": "X.Y.Z",
+  "notes": "Agent Usage Monitor X.Y.Z",
+  "pub_date": "2026-06-17T00:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "<contents of the .app.tar.gz.sig>",
+      "url": "https://github.com/dennisrongo/agent-status/releases/download/vX.Y.Z/Agent.Usage.Monitor.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "<same .sig>",
+      "url": "<same universal .app.tar.gz>"
+    }
+  }
+}
+```
+
+> The updater matches the **running arch** (`darwin-aarch64` / `darwin-x86_64`),
+> not `darwin-universal` — so list both keys. A universal payload satisfies both,
+> so they share one signature + URL.
+
+Installed apps poll `latest.json`, and when its `version` is newer than the
+running build they show the in-app **"Update & restart"** banner. The current
+version is shown at the bottom of the app's **Settings** tab.
+
+> **Repo must stay public** for the updater endpoint and DMG links to resolve —
+> private-repo release assets 404 for unauthenticated downloads.
 
 ### Single-arch builds
 

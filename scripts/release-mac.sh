@@ -7,10 +7,19 @@
 #   - Notarization credentials (see .env.example / docs/RELEASE.md)
 #
 # Usage:
-#   cp .env.example .env   # then fill in your credentials
-#   ./scripts/release-mac.sh
+#   cp .env.example .env        # then fill in your credentials
+#   ./scripts/release-mac.sh            # build + sign + notarize, write latest.json
+#   ./scripts/release-mac.sh --publish  # also create the GitHub release + upload assets
 #
 set -euo pipefail
+
+PUBLISH=false
+for arg in "$@"; do
+  case "$arg" in
+    --publish) PUBLISH=true ;;
+    *) echo "unknown arg: $arg (supported: --publish)" >&2; exit 2 ;;
+  esac
+done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -73,12 +82,84 @@ if [[ "$notarize" == true ]]; then
   xcrun stapler validate "$APP" || echo "stapler validate failed — see docs/RELEASE.md" >&2
 fi
 
+# --- Generate the updater manifest (latest.json) -----------------------------
+BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
+MACOS_DIR="${BUNDLE_DIR}/macos"
+TARBALL="${MACOS_DIR}/Agent Usage Monitor.app.tar.gz"
+SIG_FILE="${TARBALL}.sig"
+DMG_FILE=$(ls -1 "$DMG_DIR"/*.dmg 2>/dev/null | head -1 || true)
+
+# Version is the source of truth in tauri.conf.json.
+VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "dennisrongo/agent-status")
+
+if [[ -f "$SIG_FILE" ]]; then
+  # GitHub rewrites spaces in asset names to dots — match that in the URL.
+  ASSET_NAME=$(basename "$TARBALL" | tr ' ' '.')
+  PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  SIG=$(cat "$SIG_FILE")
+  URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET_NAME}"
+  MANIFEST="${BUNDLE_DIR}/latest.json"
+  # The updater resolves by running arch (darwin-aarch64 / darwin-x86_64); it
+  # does NOT match "darwin-universal". A universal payload satisfies both, so we
+  # list both keys pointing at the same tarball + signature.
+  cat > "$MANIFEST" <<JSON
+{
+  "version": "${VERSION}",
+  "notes": "Agent Usage Monitor ${VERSION}",
+  "pub_date": "${PUB_DATE}",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "${SIG}",
+      "url": "${URL}"
+    },
+    "darwin-x86_64": {
+      "signature": "${SIG}",
+      "url": "${URL}"
+    }
+  }
+}
+JSON
+  echo
+  echo "==> Wrote updater manifest: $MANIFEST"
+else
+  echo "warning: no updater .sig found — set TAURI_SIGNING_PRIVATE_KEY in .env to enable auto-updates." >&2
+  MANIFEST=""
+fi
+
 echo
 echo "==> Done. Artifacts:"
-ls -1 "$DMG_DIR"/*.dmg 2>/dev/null || true
+[[ -n "$DMG_FILE" ]] && ls -1 "$DMG_FILE"
 ls -1d "$APP" 2>/dev/null || true
-echo
-echo "To publish an auto-update, upload these to the GitHub release tagged v<version>:"
-echo "  - the .dmg (human download)"
-echo "  - the .app.tar.gz + .app.tar.gz.sig (updater payload)"
-echo "  - a latest.json manifest (see docs/RELEASE.md §6)"
+[[ -f "$SIG_FILE" ]] && ls -1 "$TARBALL" "$SIG_FILE"
+[[ -n "$MANIFEST" ]] && ls -1 "$MANIFEST"
+
+# --- Publish to GitHub Releases (opt-in) -------------------------------------
+if [[ "$PUBLISH" == true ]]; then
+  if [[ -z "$MANIFEST" ]]; then
+    echo "error: refusing to publish without an updater manifest (no .sig)." >&2
+    exit 1
+  fi
+  TAG="v${VERSION}"
+  echo
+  if gh release view "$TAG" >/dev/null 2>&1; then
+    echo "==> Release $TAG exists — uploading/overwriting assets"
+    gh release upload "$TAG" --clobber \
+      "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
+  else
+    echo "==> Creating release $TAG on $REPO"
+    gh release create "$TAG" \
+      --title "$TAG — Agent Usage Monitor" \
+      --notes "Signed & notarized universal build. Download the .dmg to install; the .app.tar.gz/.sig/latest.json drive the in-app auto-updater." \
+      "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
+  fi
+  echo
+  echo "==> Verifying the updater endpoint resolves unauthenticated"
+  code=$(curl -sL -o /dev/null -w "%{http_code}" \
+    "https://github.com/${REPO}/releases/latest/download/latest.json")
+  echo "    latest.json -> HTTP $code $([[ "$code" == 200 ]] && echo '✓' || echo '(check repo is public)')"
+else
+  echo
+  echo "Not published. Re-run with --publish to create/update the GitHub release,"
+  echo "or upload the artifacts above to a release tagged v${VERSION} manually."
+fi

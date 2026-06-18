@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 
+import { useUpdater } from "../hooks/useUpdater";
 import type { SettingsView } from "../types";
 
 interface Props {
@@ -115,7 +117,69 @@ export function Settings({
           token/cost, which is not the Pro/Max weekly limit.
         </p>
       </div>
+
+      <UpdatesSection />
     </section>
+  );
+}
+
+// Current version (from the bundle) + an explicit "Check for updates" control.
+function UpdatesSection() {
+  const [version, setVersion] = useState<string | null>(null);
+  const { phase, version: newVersion, error, check, install } = useUpdater({ auto: false });
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => setVersion(null));
+  }, []);
+
+  const busy = phase === "checking" || phase === "downloading" || phase === "ready";
+  const status =
+    phase === "checking"
+      ? "Checking…"
+      : phase === "uptodate"
+        ? "You’re on the latest version."
+        : phase === "available"
+          ? `Update available: v${newVersion}`
+          : phase === "downloading"
+            ? "Downloading…"
+            : phase === "ready"
+              ? "Restarting…"
+              : phase === "error"
+                ? `Couldn’t check${error ? ` — ${error}` : ""}`
+                : "";
+
+  return (
+    <>
+      <div className="sec-head">
+        <h2>Updates</h2>
+        <span className="meta">{version ? `v${version}` : ""}</span>
+      </div>
+      <div className="key-row">
+        <div className="update-check">
+          <button className="btn" onClick={check} disabled={busy}>
+            {phase === "checking" ? "Checking…" : "Check for updates"}
+          </button>
+          {status && (
+            <span className={`update-status ${phase === "error" ? "err" : ""}`}>
+              {status}
+            </span>
+          )}
+        </div>
+        {phase === "available" && (
+          <button
+            className="btn primary"
+            style={{ marginTop: 8, width: "100%" }}
+            onClick={install}
+          >
+            Update to v{newVersion} & restart
+          </button>
+        )}
+      </div>
+
+      <div className="version-foot">
+        Agent Usage Monitor{version ? ` v${version}` : ""}
+      </div>
+    </>
   );
 }
 
