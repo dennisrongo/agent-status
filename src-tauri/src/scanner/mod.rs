@@ -43,6 +43,9 @@ pub struct UsageSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     pub generated: String,
+    /// Epoch milliseconds the snapshot was built. Lets the frontend drop any
+    /// out-of-order snapshot (several emitters can race) instead of flipping.
+    pub generated_ms: i64,
     pub window_first: String,
     pub window_last: String,
     pub files_scanned: usize,
@@ -54,6 +57,15 @@ pub struct Limits {
     pub plan_label: String,
     pub estimate_note: String,
     pub buckets: Vec<Bucket>,
+    /// True when the meters are real live data from Claude's usage API rather
+    /// than the local estimate.
+    #[serde(default)]
+    pub live: bool,
+    /// True when live data is the chosen source but isn't available yet (still
+    /// fetching / throttled before the first reading). The UI shows a loading
+    /// state instead of the wrong-scale local estimate.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -453,6 +465,8 @@ fn build_snapshot(
             "Limits estimated for the {label} plan — usage and reset times are read from your local logs; the % left is against an editable ceiling."
         ),
         buckets,
+        live: false,
+        pending: false,
     };
 
     // ---- per-day week chart (7 days incl. today) ----
@@ -567,6 +581,7 @@ fn build_snapshot(
     let last = records.iter().map(|r| r.dt).max();
     let meta = Meta {
         generated: now.format("%Y-%m-%d %H:%M UTC").to_string(),
+        generated_ms: now.timestamp_millis(),
         window_first: first.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
         window_last: last.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
         files_scanned,

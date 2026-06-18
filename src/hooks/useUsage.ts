@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { isTauriReady } from "../tauriReady";
@@ -24,10 +24,22 @@ export function useUsage() {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
 
+  // Several sources push snapshots (the command return, the `usage-updated`
+  // event, the background loop, refresh-on-open). Apply one only if it's at
+  // least as fresh as what's displayed, so an out-of-order delivery can't make
+  // the UI flip back to older data.
+  const lastGenMs = useRef(-1);
+  const applySnapshot = useCallback((data: UsageSnapshot) => {
+    const gen = data.meta.generatedMs ?? 0;
+    if (gen < lastGenMs.current) return;
+    lastGenMs.current = gen;
+    setSnapshot(data);
+  }, []);
+
   const refresh = useCallback(async () => {
     const data = await usageCmd.execute();
-    if (data) setSnapshot(data);
-  }, [usageCmd]);
+    if (data) applySnapshot(data);
+  }, [usageCmd, applySnapshot]);
 
   const setPlan = useCallback(
     async (plan: PlanKey) => {
@@ -99,7 +111,7 @@ export function useUsage() {
       if (view) setSettings(view);
       await refresh();
       unlisten = await listen<UsageSnapshot>("usage-updated", (e) => {
-        setSnapshot(e.payload);
+        applySnapshot(e.payload);
       });
     })();
 

@@ -20,6 +20,13 @@ pub struct AppState {
     pub live_claude_attempted_at: Option<DateTime<Utc>>,
 }
 
+/// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
+/// `get_usage`, and the background loop) don't race the rate-limited live
+/// endpoint and emit conflicting estimate-vs-live snapshots. Managed separately
+/// from `AppState` because it must be held across `.await` points.
+#[derive(Default)]
+pub struct CollectLock(pub tokio::sync::Mutex<()>);
+
 /// Minimum seconds between live `/usage` fetches, independent of the (faster)
 /// log-scan refresh interval.
 pub const LIVE_CLAUDE_MIN_SECS: i64 = 120;

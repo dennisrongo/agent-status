@@ -2,6 +2,7 @@
 
 export interface Meta {
   generated: string;
+  generatedMs: number;
   windowFirst: string;
   windowLast: string;
   filesScanned: number;
@@ -25,6 +26,11 @@ export interface Limits {
   planLabel: string;
   estimateNote: string;
   buckets: Bucket[];
+  /** Meters are real live data from Claude's usage API. */
+  live?: boolean;
+  /** Live data is the chosen source but not available yet — show a loading
+   * state instead of the (wrong-scale) local estimate. */
+  pending?: boolean;
 }
 
 export interface Kpi {

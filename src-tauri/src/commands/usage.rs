@@ -15,6 +15,14 @@ use crate::vendors::{anthropic, claude, glm, Detection, VendorReport, VendorStat
 /// cache it in state. Shared by the `get_usage` command and the background
 /// refresh timer.
 pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
+    // Serialize collects. On open, `refresh_on_open` and the frontend's
+    // `get_usage` fire near-simultaneously; without this they both race the
+    // rate-limited live endpoint and emit conflicting (estimate vs live)
+    // snapshots. Holding this lock makes the second caller observe the first's
+    // throttle/cached result and stay consistent.
+    let collect_lock = app.state::<crate::state::CollectLock>();
+    let _serialized = collect_lock.0.lock().await;
+
     let now = chrono::Utc::now();
     let (plan, glm_endpoint, zai_key, anthropic_key, live_claude, cached_live, live_due) = {
         let state = app.state::<Mutex<AppState>>();
@@ -55,6 +63,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 snapshot.limits.buckets = live.buckets.clone();
                 snapshot.limits.plan_label = "live".to_string();
                 snapshot.limits.estimate_note = LIVE_NOTE.to_string();
+                snapshot.limits.live = true;
                 fresh_live = Some(live.buckets);
             } else if let Some(cached) = cached_live {
                 // Live refresh failed (the /usage endpoint rate-limits hard when
@@ -63,23 +72,42 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 // scales.
                 snapshot.limits.buckets = cached;
                 snapshot.limits.plan_label = "live".to_string();
+                snapshot.limits.live = true;
                 let reason = live.error.unwrap_or_else(|| "temporarily unavailable".to_string());
                 snapshot.limits.estimate_note = format!(
                     "Live from Claude (last good reading) — couldn’t refresh just now ({reason})."
                 );
-            } else if let Some(err) = live.error {
-                snapshot.limits.estimate_note = format!(
-                    "Showing local estimate — couldn’t read live Claude usage ({err}). Limits are against an editable plan ceiling."
-                );
+            } else if live.configured {
+                // A Claude login exists but the live read failed and we have no
+                // prior reading. Don't fall back to the wrong-scale estimate —
+                // show a pending state so the UI is either accurate or blank.
+                let reason = live.error.unwrap_or_else(|| "temporarily unavailable".to_string());
+                snapshot.limits.pending = true;
+                snapshot.limits.estimate_note =
+                    format!("Reading live Claude usage… (couldn’t reach it just now: {reason})");
+            } else {
+                // No Claude login at all → live can never work; the local
+                // estimate is the legitimate, clearly-labeled fallback.
+                if let Some(err) = live.error {
+                    snapshot.limits.estimate_note = format!(
+                        "Showing local estimate — couldn’t read live Claude usage ({err}). Limits are against an editable plan ceiling."
+                    );
+                }
             }
         } else if let Some(cached) = cached_live {
             // Within the throttle window — serve the cached live meters instead
             // of re-hitting the rate-limited endpoint.
             snapshot.limits.buckets = cached;
             snapshot.limits.plan_label = "live".to_string();
+            snapshot.limits.live = true;
             snapshot.limits.estimate_note = LIVE_NOTE.to_string();
+        } else if claude::read_token().is_some() {
+            // Throttled before the first reading, but a login exists → live data
+            // is still coming. Show pending rather than the estimate.
+            snapshot.limits.pending = true;
+            snapshot.limits.estimate_note = "Reading live Claude usage…".to_string();
         }
-        // else: throttled before the first success → keep the local estimate.
+        // else: no login → keep the local estimate.
     }
 
     // Live vendor fetches (network, async).

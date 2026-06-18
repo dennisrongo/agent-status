@@ -49,6 +49,7 @@ pub fn run() {
             // Load settings and seed managed state.
             let loaded = settings::load(&handle);
             app.manage(Mutex::new(AppState::new(loaded)));
+            app.manage(crate::state::CollectLock::default());
 
             // Tray + dropdown.
             tray::build(&handle)?;
