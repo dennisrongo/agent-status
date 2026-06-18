@@ -64,7 +64,7 @@ body {
 .tab:hover { color: var(--muted); }
 .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
 
-.body { padding: 13px; overflow-y: auto; flex: 1; }
+.body { padding: 13px; overflow-x: hidden; overflow-y: auto; flex: 1; }
 
 /* provider segmented toggle */
 .seg { display: flex; gap: 3px; padding: 3px; background: var(--bar-bg); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 13px; }
