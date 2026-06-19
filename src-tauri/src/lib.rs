@@ -110,6 +110,7 @@ pub fn run() {
             commands::set_live_claude,
             commands::set_launch_on_startup,
             commands::set_minimal_view,
+            commands::set_tooltip_provider,
             commands::set_refresh_secs,
             commands::set_glm_endpoint,
             commands::set_api_key,

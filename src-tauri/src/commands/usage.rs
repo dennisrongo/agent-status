@@ -258,6 +258,22 @@ pub fn set_minimal_view(
     Ok((&updated).into())
 }
 
+/// Choose which provider the tray hover popover previews ("claude" or "glm").
+#[tauri::command]
+pub fn set_tooltip_provider(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    provider: String,
+) -> Result<SettingsView, String> {
+    match provider.as_str() {
+        "claude" | "glm" => {}
+        other => return Err(format!("unknown provider: {other}")),
+    }
+    let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
+    settings::save(&app, &updated).into_string()?;
+    Ok((&updated).into())
+}
+
 /// Update the auto-refresh interval (seconds), clamped to a sane range.
 #[tauri::command]
 pub fn set_refresh_secs(

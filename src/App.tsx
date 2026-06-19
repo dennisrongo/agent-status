@@ -9,6 +9,7 @@ import { VendorCard } from "./components/VendorCard";
 import { WeekChart } from "./components/WeekChart";
 import { useUsage } from "./hooks/useUsage";
 import { isTauriReady } from "./tauriReady";
+import { tileLabel } from "./format";
 import type { Glm, PlanKey, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
@@ -36,6 +37,7 @@ export default function App() {
     setLiveClaude,
     setLaunchOnStartup,
     setMinimalView,
+    setTooltipProvider,
     refresh,
     reconnectClaude,
     reconnecting,
@@ -123,18 +125,23 @@ export default function App() {
           <div className="sub">updated {meta.generated}</div>
         </div>
         <span className="spacer" />
-        <select
-          className="plan-select"
-          value={plan}
-          onChange={(e) => setPlan(e.target.value as PlanKey)}
-          title="Plan tier — sets the limit ceilings"
-        >
-          {PLANS.map((p) => (
-            <option key={p.key} value={p.key}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+        {/* The plan tier only sets the ceiling for the *local estimate*. When
+            live Claude data is active it reports real limits directly, so the
+            selector does nothing — hide it to avoid implying it has an effect. */}
+        {!limits.live && (
+          <select
+            className="plan-select"
+            value={plan}
+            onChange={(e) => setPlan(e.target.value as PlanKey)}
+            title="Plan tier — sets the limit ceilings for the local estimate"
+          >
+            {PLANS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           className={`refresh ${isLoading ? "spin" : ""}`}
           onClick={() => refresh()}
@@ -402,6 +409,7 @@ export default function App() {
             setRefreshSecs={setRefreshSecs}
             setLiveClaude={setLiveClaude}
             setLaunchOnStartup={setLaunchOnStartup}
+            setTooltipProvider={setTooltipProvider}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -521,13 +529,6 @@ function InfoIcon() {
       <path d="M12 16v-4M12 8h.01" />
     </svg>
   );
-}
-
-function tileLabel(name: string): string {
-  if (name.startsWith("Session")) return "Session";
-  if (name.includes("all models")) return "Week";
-  const scope = name.split("·").pop()?.trim();
-  return scope ? `${scope} wk` : name;
 }
 
 function fmtTok(n: number): string {

@@ -134,6 +134,29 @@ body {
 .meter.warn .ml2 b { color: var(--warn); }
 .meter.danger .ml2 b { color: var(--danger); }
 
+/* hover popover (separate borderless window shown on tray hover) */
+.hover-pop { display: flex; flex-direction: column; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 13px 13px; overflow: hidden; }
+.hp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.hp-title { font-size: 12.5px; font-weight: 650; letter-spacing: -0.01em; color: var(--fg); }
+.hp-src { font-family: var(--mono); font-size: 10px; color: var(--faint); letter-spacing: -0.02em; white-space: nowrap; }
+.hp-rows { display: flex; flex-direction: column; gap: 12px; }
+.hp-row { display: flex; flex-direction: column; gap: 6px; }
+.hp-line { display: flex; align-items: center; gap: 7px; }
+.hp-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.hp-dot.ok { background: var(--ok); }
+.hp-dot.warn { background: var(--warn); }
+.hp-dot.danger { background: var(--danger); }
+.hp-label { font-size: 12px; font-weight: 600; color: var(--fg); letter-spacing: -0.01em; }
+.hp-reset { font-family: var(--mono); font-size: 10px; color: var(--faint); letter-spacing: -0.02em; margin-left: auto; white-space: nowrap; }
+.hp-pct { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.hp-status { font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.hp-status.warn { color: var(--warn); }
+.hp-glm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.hp-glm-head .hp-pct { color: var(--accent); }
+.hp-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.hp-kv-label { font-size: 11.5px; color: var(--muted); }
+.hp-kv-val { font-family: var(--mono); font-size: 11px; color: var(--fg); letter-spacing: -0.02em; white-space: nowrap; }
+
 /* week chart */
 .chart { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px 13px 11px; }
 .bars { display: flex; align-items: flex-end; gap: 7px; height: 84px; margin-bottom: 8px; }

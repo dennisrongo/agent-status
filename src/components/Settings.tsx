@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { SettingsView } from "../types";
+import type { SettingsView, TooltipProvider } from "../types";
 
 interface Props {
   settings: SettingsView;
@@ -11,6 +11,7 @@ interface Props {
   setLiveClaude: (enabled: boolean) => Promise<void>;
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   setMinimalView: (enabled: boolean) => Promise<void>;
+  setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
   keyError: string | null;
 }
 
@@ -32,6 +33,7 @@ export function Settings({
   setLiveClaude,
   setLaunchOnStartup,
   setMinimalView,
+  setTooltipProvider,
   keyError,
 }: Props) {
   return (
@@ -55,6 +57,22 @@ export function Settings({
             onChange={(e) => setMinimalView(e.target.checked)}
           />
         </label>
+      </div>
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Tray hover provider</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+          Which provider's usage the menu-bar hover popover previews.
+        </span>
+        <select
+          className="interval-select"
+          value={settings.tooltipProvider}
+          onChange={(e) => setTooltipProvider(e.target.value as TooltipProvider)}
+        >
+          <option value="claude">Claude</option>
+          <option value="glm">GLM / z.ai</option>
+        </select>
       </div>
 
       <div className="sec-head">

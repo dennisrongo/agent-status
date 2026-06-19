@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main menubar window",
-  "windows": ["main"],
+  "description": "Capabilities for the main menubar window and the hover popover",
+  "windows": ["main", "hover"],
   "permissions": [
     "core:default",
     "core:event:default",

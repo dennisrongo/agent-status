@@ -1,12 +1,29 @@
-//! Menubar tray icon with a click-to-toggle dropdown window positioned
-//! under the tray icon.
+//! Menubar tray icon with a click-to-toggle dropdown window and a small hover
+//! popover that previews the top usage meters, both positioned under the icon.
+
+use std::sync::Mutex;
 
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, Rect, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, Manager, Rect, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
+
+use crate::scanner::UsageSnapshot;
+use crate::state::AppState;
+
+/// Tray icon id, reused to look the icon back up later.
+const TRAY_ID: &str = "main-tray";
+
+/// Label of the hover popover window. It loads the same bundle as the "main"
+/// dropdown; the frontend renders the compact popover when it sees this label.
+const HOVER_LABEL: &str = "hover";
+
+/// Logical width of the hover popover. Its height is fit to content by the
+/// frontend; the width stays fixed so the right-edge anchor under the icon holds.
+const HOVER_WIDTH: f64 = 300.0;
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -19,10 +36,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
         .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
 
-    TrayIconBuilder::with_id("main-tray")
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_icon)
         .icon_as_template(true)
-        .tooltip("Agent Usage Monitor")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -34,23 +50,56 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            } = event
-            {
-                // The icon's bounding rect (physical pixels, top-left origin)
-                // is the anchor: it tells us which display the menu bar is on
-                // and exactly where the icon sits. Unlike the cursor `position`
-                // field, it's converted into the same coordinate space the
-                // window APIs use.
-                toggle_window(tray.app_handle(), Some(rect));
+            match event {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    rect,
+                    ..
+                } => {
+                    // The icon's bounding rect (physical pixels, top-left origin)
+                    // is the anchor: it tells us which display the menu bar is on
+                    // and exactly where the icon sits. Unlike the cursor `position`
+                    // field, it's converted into the same coordinate space the
+                    // window APIs use.
+                    hide_hover_popover(tray.app_handle());
+                    toggle_window(tray.app_handle(), Some(rect));
+                }
+                // Hovering previews the top usage meters in a small popover, so a
+                // glance gives current numbers without opening the full dropdown.
+                TrayIconEvent::Enter { rect, .. } => {
+                    show_hover_popover(tray.app_handle(), rect)
+                }
+                TrayIconEvent::Leave { .. } => hide_hover_popover(tray.app_handle()),
+                _ => {}
             }
         })
         .build(app)?;
 
+    build_hover_window(app)?;
+
+    Ok(())
+}
+
+/// Pre-create the hover popover (hidden) so it's already loaded and listening
+/// for `usage-updated` events by the time the user first hovers the icon.
+/// Borderless, non-focusing, always-on-top — a passive preview, never the key
+/// window, so hovering never steals focus from whatever the user is typing in.
+fn build_hover_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(HOVER_LABEL).is_some() {
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, HOVER_LABEL, WebviewUrl::App("index.html".into()))
+        .title("Agent Usage")
+        .inner_size(HOVER_WIDTH, 150.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(true)
+        .focused(false)
+        .visible(false)
+        .build()?;
     Ok(())
 }
 
@@ -158,4 +207,73 @@ pub fn refresh_on_open(app: &AppHandle) {
             Err(e) => tracing::warn!("refresh-on-open failed: {e}"),
         }
     });
+}
+
+/// Show the hover popover under the tray icon and refresh its data.
+///
+/// The popover persists across hovers, so it already shows the last reading the
+/// instant it appears; we also broadcast the cached snapshot (covers the very
+/// first hover, before any collect) and kick off an on-demand refresh whose
+/// fresh snapshot is pushed to every window. Refreshing only on hover keeps the
+/// app idle while nothing is on screen.
+fn show_hover_popover(app: &AppHandle, rect: Rect) {
+    // Don't compete with the full dropdown when it's already open — the same
+    // meters (and more) are already on screen.
+    if app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(win) = app.get_webview_window(HOVER_LABEL) else {
+        return;
+    };
+
+    // Tell the popover which provider to preview before it renders. Pushed on
+    // every show, so a change made in Settings takes effect on the next hover
+    // without any settings-sync plumbing in the popover.
+    let _ = app.emit("hover-provider", tooltip_provider(app));
+
+    if let Some(snapshot) = cached_snapshot(app) {
+        let _ = app.emit("usage-updated", &snapshot);
+    }
+
+    position_dropdown(&win, Some(rect));
+    let _ = win.show();
+    // macOS can re-place a window onto another monitor when it becomes visible;
+    // re-assert the position (mirrors `toggle_window` for the main dropdown).
+    position_dropdown(&win, Some(rect));
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match crate::commands::usage::collect(&handle).await {
+            Ok(snapshot) => {
+                let _ = handle.emit("usage-updated", &snapshot);
+            }
+            Err(e) => tracing::warn!("hover refresh failed: {e}"),
+        }
+    });
+}
+
+fn hide_hover_popover(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(HOVER_LABEL) {
+        let _ = win.hide();
+    }
+}
+
+/// Last-collected snapshot, if any. Locked only briefly to clone it out.
+fn cached_snapshot(app: &AppHandle) -> Option<UsageSnapshot> {
+    app.state::<Mutex<AppState>>()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.snapshot.clone())
+}
+
+/// Provider the hover popover should preview, from settings ("claude" by default).
+fn tooltip_provider(app: &AppHandle) -> String {
+    app.state::<Mutex<AppState>>()
+        .lock()
+        .map(|guard| guard.settings.tooltip_provider.clone())
+        .unwrap_or_else(|_| "claude".to_string())
 }

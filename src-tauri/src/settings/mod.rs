@@ -37,6 +37,9 @@ pub struct Settings {
     /// Compact "main stats only" Overview that fits the window without
     /// scrolling. Defaults off — the full view is the standard layout.
     pub minimal_view: bool,
+    /// Which provider the tray hover popover previews: "claude" or "glm".
+    /// Defaults to Claude (the local-by-default provider).
+    pub tooltip_provider: String,
 }
 
 impl Default for Settings {
@@ -50,6 +53,7 @@ impl Default for Settings {
             live_claude: true,
             launch_on_startup: true,
             minimal_view: false,
+            tooltip_provider: "claude".to_string(),
         }
     }
 }
@@ -66,6 +70,7 @@ pub struct SettingsView {
     pub live_claude: bool,
     pub launch_on_startup: bool,
     pub minimal_view: bool,
+    pub tooltip_provider: String,
 }
 
 impl From<&Settings> for SettingsView {
@@ -79,6 +84,7 @@ impl From<&Settings> for SettingsView {
             live_claude: s.live_claude,
             launch_on_startup: s.launch_on_startup,
             minimal_view: s.minimal_view,
+            tooltip_provider: s.tooltip_provider.clone(),
         }
     }
 }

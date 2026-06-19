@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { isTauriReady } from "../tauriReady";
-import type { PlanKey, SettingsView, UsageSnapshot } from "../types";
+import type { PlanKey, SettingsView, TooltipProvider, UsageSnapshot } from "../types";
 import { useTauriCommand } from "./useTauriCommand";
 
 type Provider = "glm" | "anthropic";
@@ -20,6 +20,7 @@ export function useUsage() {
   const liveClaudeCmd = useTauriCommand<SettingsView>("set_live_claude");
   const launchOnStartupCmd = useTauriCommand<SettingsView>("set_launch_on_startup");
   const minimalViewCmd = useTauriCommand<SettingsView>("set_minimal_view");
+  const tooltipProviderCmd = useTauriCommand<SettingsView>("set_tooltip_provider");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -97,6 +98,14 @@ export function useUsage() {
     [minimalViewCmd],
   );
 
+  const setTooltipProvider = useCallback(
+    async (provider: TooltipProvider) => {
+      const updated = await tooltipProviderCmd.execute({ provider });
+      if (updated) setSettings(updated);
+    },
+    [tooltipProviderCmd],
+  );
+
   const setGlmEndpoint = useCallback(
     async (endpoint: string) => {
       const updated = await endpointCmd.execute({ endpoint });
@@ -155,6 +164,7 @@ export function useUsage() {
     setLiveClaude,
     setLaunchOnStartup,
     setMinimalView,
+    setTooltipProvider,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,

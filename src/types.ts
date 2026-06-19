@@ -127,6 +127,8 @@ export interface UsageSnapshot {
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
+export type TooltipProvider = "claude" | "glm";
+
 export interface SettingsView {
   plan: PlanKey;
   refreshSecs: number;
@@ -136,4 +138,5 @@ export interface SettingsView {
   liveClaude: boolean;
   launchOnStartup: boolean;
   minimalView: boolean;
+  tooltipProvider: TooltipProvider;
 }
