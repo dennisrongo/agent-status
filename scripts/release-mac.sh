@@ -95,7 +95,14 @@ if [[ "$notarize" == true ]]; then
   xcrun stapler validate "$APP" || echo "stapler validate failed — see docs/RELEASE.md" >&2
 fi
 
-# --- Generate the updater manifest (latest.json) -----------------------------
+# --- Merge our platform entry into the shared updater manifest ---------------
+# agent-status ships from two machines (this Mac + a Windows PC) into ONE
+# latest.json per release. We MERGE rather than overwrite, so the Windows
+# build's signature (added later, against the same version) is never clobbered —
+# and vice versa. scripts/merge-manifest.mjs is the single, version-aware merge
+# point: same version keeps the other platform's entries, a new version starts
+# fresh. The manifest is tracked in git so the Windows machine can pull the mac
+# signatures and merge into the same version.
 BUNDLE_DIR="src-tauri/target/${TARGET}/release/bundle"
 MACOS_DIR="${BUNDLE_DIR}/macos"
 TARBALL="${MACOS_DIR}/Agent Usage Monitor.app.tar.gz"
@@ -106,35 +113,25 @@ DMG_FILE=$(ls -1 "$DMG_DIR"/*.dmg 2>/dev/null | head -1 || true)
 VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "dennisrongo/agent-status")
 
+# Tracked, cross-machine source of truth (committed to git).
+MANIFEST="updater/latest.json"
+
 if [[ -f "$SIG_FILE" ]]; then
   # GitHub rewrites spaces in asset names to dots — match that in the URL.
   ASSET_NAME=$(basename "$TARBALL" | tr ' ' '.')
-  PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  SIG=$(cat "$SIG_FILE")
   URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET_NAME}"
-  MANIFEST="${BUNDLE_DIR}/latest.json"
   # The updater resolves by running arch (darwin-aarch64 / darwin-x86_64); it
   # does NOT match "darwin-universal". A universal payload satisfies both, so we
   # list both keys pointing at the same tarball + signature.
-  cat > "$MANIFEST" <<JSON
-{
-  "version": "${VERSION}",
-  "notes": "Agent Usage Monitor ${VERSION}",
-  "pub_date": "${PUB_DATE}",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "${SIG}",
-      "url": "${URL}"
-    },
-    "darwin-x86_64": {
-      "signature": "${SIG}",
-      "url": "${URL}"
-    }
-  }
-}
-JSON
+  node scripts/merge-manifest.mjs \
+    --manifest "$MANIFEST" \
+    --version "$VERSION" \
+    --platforms "darwin-aarch64,darwin-x86_64" \
+    --sig-file "$SIG_FILE" \
+    --url "$URL"
   echo
-  echo "==> Wrote updater manifest: $MANIFEST"
+  echo "==> Merged darwin entries into updater manifest: $MANIFEST"
+  echo "    Commit + push this file so the Windows build merges into the same version."
 else
   echo "warning: no updater .sig found — set TAURI_SIGNING_PRIVATE_KEY in .env to enable auto-updates." >&2
   MANIFEST=""
@@ -154,16 +151,50 @@ if [[ "$PUBLISH" == true ]]; then
     exit 1
   fi
   TAG="v${VERSION}"
+
+  # Build release notes from the commit log since the previous release tag, so
+  # the GitHub release records what actually changed in this version instead of
+  # a static blurb. The Windows build only uploads assets (never edits the body),
+  # so these notes survive intact across both machines.
+  NOTES_FILE="$(mktemp -t agent-status-notes)"
+  trap 'rm -f "$NOTES_FILE"' EXIT
+  # Releases are tagged server-side by `gh release create`, so the local repo may
+  # not have prior tags — fetch them before picking the previous one.
+  git fetch --tags --quiet || true
+  PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -1 || true)
+  {
+    echo "## What's changed in ${TAG}"
+    echo
+    if [[ -n "$PREV_TAG" ]]; then
+      CHANGES=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s (%h)' \
+        | grep -viE 'bump version' || true)
+      [[ -z "$CHANGES" ]] && CHANGES="- Maintenance and internal improvements."
+      printf '%s\n\n\n' "$CHANGES"
+      echo "**Full changelog:** https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}"
+    else
+      echo "- Initial release."
+    fi
+    echo
+    echo "---"
+    echo
+    echo "Download the installer for your platform below (\`.dmg\` for macOS, \`.exe\` for Windows)."
+    echo "Installed apps auto-update via the in-app updater."
+  } > "$NOTES_FILE"
+
+  echo
+  echo "==> Release notes for ${TAG} (from ${PREV_TAG:-<none>}..HEAD):"
+  sed 's/^/    /' "$NOTES_FILE"
   echo
   if gh release view "$TAG" >/dev/null 2>&1; then
-    echo "==> Release $TAG exists — uploading/overwriting assets"
+    echo "==> Release $TAG exists — refreshing notes + uploading/overwriting assets"
+    gh release edit "$TAG" --notes-file "$NOTES_FILE"
     gh release upload "$TAG" --clobber \
       "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
   else
     echo "==> Creating release $TAG on $REPO"
     gh release create "$TAG" \
       --title "$TAG — Agent Usage Monitor" \
-      --notes "Signed & notarized universal build. Download the .dmg to install; the .app.tar.gz/.sig/latest.json drive the in-app auto-updater." \
+      --notes-file "$NOTES_FILE" \
       "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
   fi
   echo
