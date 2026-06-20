@@ -472,10 +472,12 @@ function QuotaMeters({
   windows,
   srcLabel,
   minimal,
+  meta,
 }: {
   windows: VendorKeyVal[];
   srcLabel: string;
   minimal: boolean;
+  meta?: string;
 }) {
   if (windows.length === 0) return null;
   return (
@@ -496,7 +498,7 @@ function QuotaMeters({
         <>
           <div className="sec-head">
             <h2>Usage</h2>
-            <span className="meta">live · {srcLabel}</span>
+            <span className="meta">{meta ?? `live · ${srcLabel}`}</span>
           </div>
           <div className="meters">
             {windows.map((d, i) => (
@@ -544,13 +546,13 @@ function GlmOverview({
 
   return (
     <>
-      <div className="sec-head">
-        <h2>z.ai quota</h2>
-        <span className="meta">coding plan · via API key</span>
-      </div>
-
       {live && vendor ? (
-        <QuotaMeters windows={windows} srcLabel="z.ai" minimal={minimal} />
+        <QuotaMeters
+          windows={windows}
+          srcLabel="z.ai"
+          minimal={minimal}
+          meta="coding plan · via API key"
+        />
       ) : (
         <div className="connect-card">
           <p className="connect-title">
@@ -611,15 +613,15 @@ function CopilotOverview({
 
   return (
     <>
-      <div className="sec-head">
-        <h2>Copilot premium requests</h2>
-        <span className="meta">live · via Copilot token</span>
-      </div>
-
       {live && vendor ? (
         <>
           {windows.length > 0 ? (
-            <QuotaMeters windows={windows} srcLabel="Copilot" minimal={minimal} />
+            <QuotaMeters
+              windows={windows}
+              srcLabel="Copilot"
+              minimal={minimal}
+              meta="live · via Copilot token"
+            />
           ) : (
             // Unlimited plan: no quota to meter, so show the headline instead.
             <div className="kpis glm-kpis">
