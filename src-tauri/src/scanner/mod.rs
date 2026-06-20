@@ -136,6 +136,7 @@ pub struct SessionRow {
     pub tokens: u64,
     pub cost: f64,
     pub when: String,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -546,6 +547,11 @@ fn build_snapshot(
         .collect();
 
     // ---- sessions ----
+    // Aggregate Claude sessions, then merge a single GLM summary row, then
+    // order the combined set by most-recent activity (newest first). Unlike
+    // vendors such as Copilot (live quota only) or GLM (lifecycle logs), Claude
+    // is the only source with per-session token/cost data; GLM contributes one
+    // summary row so the Sessions view still spans providers.
     let mut sessions: HashMap<String, SessionAgg> = HashMap::new();
     for r in &records {
         let agg = sessions.entry(r.session_id.clone()).or_insert(SessionAgg {
@@ -563,30 +569,59 @@ fn build_snapshot(
         }
     }
     let session_count = sessions.len();
-    let mut sorted: Vec<(String, SessionAgg)> = sessions.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.last.cmp(&a.1.last));
-    let mut session_rows: Vec<SessionRow> = sorted
-        .iter()
-        .take(6)
-        .map(|(id, s)| SessionRow {
-            id: id.chars().take(8).collect(),
-            project: clean_project(&s.project),
-            model: s.family.to_string(),
-            tokens: s.tokens,
-            cost: (s.cost * 100.0).round() / 100.0,
-            when: humanize_when(s.last, now),
+
+    // Cap the per-session Claude rows to the most-recent N. The list is
+    // scrollable, not infinite — a long history would otherwise render an
+    // unbounded DOM. The GLM summary row is added afterward and always kept.
+    const MAX_CLAUDE_ROWS: usize = 25;
+    let mut claude: Vec<(&String, &SessionAgg)> = sessions.iter().collect();
+    claude.sort_by(|a, b| b.1.last.cmp(&a.1.last));
+
+    // Each row carries the instant used for ordering, so the GLM summary row
+    // can interleave with Claude rows by recency. `when` is derived last.
+    let mut rows: Vec<(DateTime<Utc>, SessionRow)> = Vec::new();
+    for (id, s) in claude.into_iter().take(MAX_CLAUDE_ROWS) {
+        rows.push((
+            s.last,
+            SessionRow {
+                id: id.chars().take(8).collect(),
+                project: clean_project(&s.project),
+                model: s.family.to_string(),
+                tokens: s.tokens,
+                cost: (s.cost * 100.0).round() / 100.0,
+                when: String::new(),
+                provider: "claude".to_string(),
+            },
+        ));
+    }
+
+    // ---- GLM ----
+    let (glm, glm_latest) = scan_glm(zai_root);
+    if glm.sessions > 0 {
+        let when_dt = glm_latest.unwrap_or(now);
+        rows.push((
+            when_dt,
+            SessionRow {
+                id: "glm".to_string(),
+                project: "GLM / z.ai".to_string(),
+                model: String::new(),
+                tokens: 0,
+                cost: 0.0,
+                when: String::new(),
+                provider: "glm".to_string(),
+            },
+        ));
+    }
+
+    // Newest first, then assign humanized `when` from the ordering instant.
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    let session_rows: Vec<SessionRow> = rows
+        .into_iter()
+        .map(|(dt, mut row)| {
+            row.when = humanize_when(dt, now);
+            row
         })
         .collect();
-    while session_rows.len() < 6 {
-        session_rows.push(SessionRow {
-            id: "—".to_string(),
-            project: "—".to_string(),
-            model: String::new(),
-            tokens: 0,
-            cost: 0.0,
-            when: "—".to_string(),
-        });
-    }
 
     // ---- window bounds for meta ----
     let first = records.iter().map(|r| r.dt).min();
@@ -598,9 +633,6 @@ fn build_snapshot(
         window_last: last.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default(),
         files_scanned,
     };
-
-    // ---- GLM ----
-    let glm = scan_glm(zai_root);
 
     let providers = vec![
         Provider {
@@ -655,13 +687,17 @@ fn weekday_abbr(num_from_monday: u32) -> String {
     .to_string()
 }
 
-fn scan_glm(zai_root: &Path) -> Glm {
+/// Scan z.ai MCP logs. Returns the aggregate `Glm` and the most recent event
+/// timestamp (parsed from the leading `[...]` bracket), so callers can merge a
+/// GLM summary row into the sessions list by recency.
+fn scan_glm(zai_root: &Path) -> (Glm, Option<DateTime<Utc>>) {
     let note = "Local z.ai MCP logs record server lifecycle only — token/cost not exposed locally."
         .to_string();
     let pattern = format!("{}/zai-mcp-*.log", zai_root.to_string_lossy());
     let mut sessions = 0u32;
     let mut active_days: Vec<String> = Vec::new();
     let mut last = String::new();
+    let mut latest_dt: Option<DateTime<Utc>> = None;
 
     let paths: Vec<PathBuf> = match glob::glob(&pattern) {
         Ok(p) => p.filter_map(Result::ok).collect(),
@@ -687,6 +723,13 @@ fn scan_glm(zai_root: &Path) -> Glm {
                     if ts > last {
                         last = ts;
                     }
+                    // Best-effort parse of the bracket timestamp; keep the newest.
+                    if let Some(dt) = parse_glm_ts(&line[1..idx]) {
+                        latest_dt = Some(match latest_dt {
+                            Some(d) if d > dt => d,
+                            _ => dt,
+                        });
+                    }
                 }
             }
         }
@@ -695,7 +738,7 @@ fn scan_glm(zai_root: &Path) -> Glm {
         }
     }
 
-    Glm {
+    let glm = Glm {
         sessions,
         active_days: active_days.len(),
         last: if last.is_empty() {
@@ -704,7 +747,32 @@ fn scan_glm(zai_root: &Path) -> Glm {
             last.chars().take(10).collect()
         },
         note,
+    };
+    (glm, latest_dt)
+}
+
+/// Parse a z.ai log bracket timestamp. The MCP server writes RFC 3339 instants
+/// (e.g. `2026-01-24T06:02:14.871Z`), the same form Claude records use; the
+/// trailing `Z`/offset means they're genuine UTC and compare directly against
+/// the Claude record timestamps. A couple of offset-less forms are accepted as
+/// best-effort fallbacks, else `None`.
+///
+/// `parse_from_str` must consume the *entire* string, so each accepted shape has
+/// to be tried explicitly — a shorter format silently fails on a longer input.
+fn parse_glm_ts(raw: &str) -> Option<DateTime<Utc>> {
+    use chrono::{NaiveDate, NaiveDateTime};
+    let s = raw.trim();
+    // Real format: RFC 3339 with a `Z`/offset.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
     }
+    // Best-effort fallbacks for offset-less variants (treated as UTC).
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+    }
+    let date_only = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let dt = date_only.and_hms_opt(0, 0, 0)?;
+    Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
 }
 
 #[cfg(test)]
@@ -749,8 +817,10 @@ mod tests {
         assert!(snap.limits.buckets[0].reset.contains('h') || snap.limits.buckets[0].reset.contains('m'));
         // three model rows always present
         assert_eq!(snap.models.len(), 3);
-        // six session rows (padded)
-        assert_eq!(snap.sessions.len(), 6);
+        // one Claude session row (no longer padded to a fixed length)
+        assert_eq!(snap.sessions.len(), 1);
+        assert_eq!(snap.sessions[0].provider, "claude");
+        assert_eq!(snap.sessions[0].model, "opus");
     }
 
     #[test]
@@ -784,8 +854,63 @@ mod tests {
         let now = Utc::now();
         let snap = scan(&tmp.path().join("none"), &tmp.path().join("nozai"), "pro", now);
         assert_eq!(snap.meta.files_scanned, 0);
-        assert_eq!(snap.sessions.len(), 6);
+        assert_eq!(snap.sessions.len(), 0);
         assert_eq!(snap.week.len(), 7);
+    }
+
+    #[test]
+    fn glm_row_orders_by_parsed_event_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // A Claude session at 15:00 — the SAME day as the GLM event but LATER.
+        let claude_line =
+            r#"{"timestamp":"2026-06-17T15:00:00.000Z","sessionId":"latest12","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#;
+        write_jsonl(&claude, "proj-a", &[claude_line]);
+
+        // GLM server-start earlier the same day (09:00). The bracket carries a
+        // real RFC 3339 instant (matching actual z.ai logs), which must be
+        // parsed for ordering — not silently dropped to a `now` fallback (which
+        // would wrongly pin GLM to the top).
+        std::fs::write(
+            zai.join("zai-mcp-2026-06-17.log"),
+            "[2026-06-17T09:00:00.000Z] INFO: MCP Server started successfully\n",
+        )
+        .unwrap();
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        // Claude row + one GLM summary row.
+        assert_eq!(snap.sessions.len(), 2);
+        // Claude (15:00) is newer than the GLM event (09:00), so it sorts first.
+        // This ordering only holds if parse_glm_ts read the GLM event time
+        // instead of falling back to `now` — i.e. it is the discriminating
+        // assertion that the timestamp parse actually works.
+        assert_eq!(snap.sessions[0].provider, "claude");
+        assert_eq!(snap.sessions[1].provider, "glm");
+        assert_eq!(snap.sessions[1].project, "GLM / z.ai");
+        assert_eq!(snap.sessions[1].model, ""); // no model badge for GLM
+    }
+
+    #[test]
+    fn parse_glm_ts_parses_rfc3339_and_fallbacks() {
+        // Real MCP log format: RFC 3339 with milliseconds and a `Z`.
+        let real = parse_glm_ts("2026-01-24T06:02:14.871Z").expect("rfc3339 should parse");
+        assert_eq!(real.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-01-24 06:02:14");
+        // A non-UTC offset is normalized to UTC.
+        let offset = parse_glm_ts("2026-01-24T06:02:14+02:00").expect("offset should parse");
+        assert_eq!(offset.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-01-24 04:02:14");
+        // Offset-less fallbacks still work.
+        let full = parse_glm_ts("2026-06-17 09:00:00").expect("space form should parse");
+        assert_eq!(full.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-06-17 09:00:00");
+        let date_only = parse_glm_ts("2026-06-17").expect("date-only should parse");
+        assert_eq!(date_only.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-06-17 00:00:00");
+        // Garbage returns None rather than panicking.
+        assert!(parse_glm_ts("not a timestamp").is_none());
     }
 
     #[test]

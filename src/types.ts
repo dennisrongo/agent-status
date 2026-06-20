@@ -71,6 +71,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
+  provider: "claude" | "glm" | "copilot";
 }
 
 export interface Provider {

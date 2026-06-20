@@ -40,9 +40,14 @@ fn scans_multiple_projects_and_splits_models() {
     assert_eq!(snap.week.len(), 7);
     assert_eq!(snap.models.len(), 3);
 
-    // Two distinct sessions tracked, padded to six rows.
+    // Two distinct sessions tracked; rows are no longer padded to a fixed
+    // length, and with no z.ai logs there's no GLM summary row.
     assert_eq!(snap.providers[0].sessions, 2);
-    assert_eq!(snap.sessions.len(), 6);
+    assert_eq!(snap.sessions.len(), 2);
+    // Newest first: proj-a's s1 (19:05 on 06-17) precedes proj-b's s2 (06-16).
+    assert_eq!(snap.sessions[0].provider, "claude");
+    assert_eq!(snap.sessions[0].model, "opus");
+    assert_eq!(snap.sessions[1].model, "haiku");
 
     // Opus and Haiku both have non-zero token strings.
     let opus = snap.models.iter().find(|m| m.key == "opus").unwrap();

@@ -216,10 +216,19 @@ body {
 .budget-foot .rem { color: var(--muted); }
 
 /* sessions */
-.sess { display: flex; flex-direction: column; }
+.sess { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; }
 .sess-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--border); }
 .sess-row:last-child { border-bottom: 0; }
-.sess-row .s-proj { font-size: 12px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* s-main must allow shrink (grid items default to min-width:auto) so the
+   nested flex row can ellipsize instead of overflowing the 1fr track. */
+.sess-row .s-main { min-width: 0; }
+.sess-row .s-proj { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; font-weight: 550; }
+/* The text node, not the flex container, carries the ellipsis. */
+.sess-row .s-proj .s-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-prov { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.s-prov.claude { background: var(--claude); }
+.s-prov.glm { background: var(--glm); }
+.s-prov.copilot { background: var(--copilot); }
 .sess-row .s-meta { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 3px; display: flex; gap: 8px; letter-spacing: -0.02em; }
 .badge { display: inline-block; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-2); color: var(--muted); }
 .badge.opus { color: var(--violet); border-color: oklch(70% 0.13 290 / .4); }

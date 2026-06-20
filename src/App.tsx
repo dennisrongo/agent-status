@@ -335,32 +335,43 @@ export default function App() {
         {tab === "sessions" && (
           <section className="panel">
             <div className="sec-head">
-              <h2>Recent sessions</h2>
+              <h2>Recent activity</h2>
               <span className="meta">{meta.filesScanned} logs scanned</span>
             </div>
             <div className="sess">
-              {sessions.map((s, i) => (
-                <div className="sess-row" key={`${s.id}-${i}`}>
-                  <div>
-                    <div className="s-proj">{s.project}</div>
-                    <div className="s-meta">
-                      {s.model && <span className={`badge ${s.model}`}>{s.model}</span>}
-                      <span>#{s.id}</span>
-                      <span>{s.when}</span>
+              {sessions.map((s) => {
+                const isGlm = s.provider === "glm";
+                return (
+                  <div className="sess-row" key={`${s.provider}-${s.id}`}>
+                    <div className="s-main">
+                      <div className="s-proj">
+                        <span className={`s-prov ${s.provider}`} />
+                        <span className="s-name">{s.project}</span>
+                      </div>
+                      <div className="s-meta">
+                        {s.model && <span className={`badge ${s.model}`}>{s.model}</span>}
+                        {isGlm ? (
+                          <span>{glm.sessions} session{glm.sessions === 1 ? "" : "s"}</span>
+                        ) : (
+                          <span>#{s.id}</span>
+                        )}
+                        <span>{s.when}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="s-num">{isGlm ? "—" : fmtTok(s.tokens)}</div>
+                      <div className="s-cost">{isGlm ? "—" : `$${s.cost.toFixed(2)}`}</div>
                     </div>
                   </div>
-                  <div>
-                    <div className="s-num">{fmtTok(s.tokens)}</div>
-                    <div className="s-cost">${s.cost.toFixed(2)}</div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div className="note">
               <InfoIcon />
               <p>
-                Tokens include input, output and cache read/write. Cost is estimated from
-                standard-tier per-model pricing.
+                Activity spans all providers with local session data. Claude tokens include
+                input, output and cache read/write (cost estimated from standard-tier pricing).
+                GLM logs are server-lifecycle only. Copilot usage is tracked on the Providers tab.
               </p>
             </div>
           </section>
