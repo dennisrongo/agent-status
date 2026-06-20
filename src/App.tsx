@@ -5,7 +5,6 @@ import { About } from "./components/About";
 import { Meter } from "./components/Meter";
 import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
-import { VendorCard } from "./components/VendorCard";
 import { WeekChart } from "./components/WeekChart";
 import { useUsage } from "./hooks/useUsage";
 import { fitWindowHeight, isWindows } from "./platform";
@@ -39,6 +38,11 @@ export default function App() {
     setLaunchOnStartup,
     setMinimalView,
     setTooltipProvider,
+    reloadSettings,
+    connectCopilotStart,
+    copilotPoll,
+    copilotCancel,
+    disconnectCopilot,
     refresh,
     reconnectClaude,
     reconnecting,
@@ -48,7 +52,7 @@ export default function App() {
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
@@ -107,11 +111,17 @@ export default function App() {
   // showing both if the backend didn't report detection.
   const showClaude = snapshot.detection?.claude ?? true;
   const showGlm = snapshot.detection?.glm ?? true;
-  const available: ("claude" | "glm")[] = [
+  const showCopilot = snapshot.detection?.copilot ?? false;
+  // Claude's local-log totals row for the Providers tab.
+  const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
+  const available: ("claude" | "glm" | "copilot")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
+    ...(showCopilot ? (["copilot"] as const) : []),
   ];
-  const providerTabs = available.length ? available : (["claude", "glm"] as const);
+  const providerTabs: ("claude" | "glm" | "copilot")[] = available.length
+    ? available
+    : ["claude", "glm"];
   const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
 
   return (
@@ -191,7 +201,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Claude" : "GLM"}
+                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : "Copilot"}
                   </button>
                 ))}
               </div>
@@ -311,6 +321,14 @@ export default function App() {
                 onConnect={() => setTab("settings")}
               />
             )}
+
+            {eff === "copilot" && (
+              <CopilotOverview
+                vendor={snapshot.vendor?.copilot}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+              />
+            )}
           </section>
         )}
 
@@ -351,60 +369,51 @@ export default function App() {
         {tab === "providers" && (
           <section className="panel">
             <div className="sec-head">
-              <h2>Connected providers</h2>
+              <h2>Providers</h2>
               <span className="meta">
                 {meta.windowFirst} → {meta.windowLast}
               </span>
             </div>
+            {/* One self-contained card per provider — local-log totals and live
+                API usage merged, so each provider appears exactly once. */}
             <div className="prov">
-              {providers.map((p) => (
-                <div className="prov-row" key={p.name}>
-                  <span className="stat" />
-                  <div>
-                    <div className="pname">{p.name}</div>
-                    <div className="pmeta">
-                      {p.sessions} sessions · {p.status}
-                    </div>
-                  </div>
-                  <span className="spacer" />
-                  <div>
-                    <div className="pnum">{p.tokens}</div>
-                    <div className="pcost">{p.cost}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {snapshot.vendor && (
-              <>
-                <div className="sec-head">
-                  <h2>Live vendor usage</h2>
-                  <span className="meta">via API key</span>
-                </div>
-                <div className="prov">
-                  <VendorCard name="Anthropic (org)" status={snapshot.vendor.anthropic} />
-                  <VendorCard name="z.ai (GLM)" status={snapshot.vendor.glm} />
-                </div>
-              </>
-            )}
-
-            <div className="sec-head">
-              <h2>GLM / z.ai detail</h2>
-              <span className="meta">local MCP logs</span>
-            </div>
-            <div className="budget">
-              <div className="budget-foot" style={{ marginTop: 0 }}>
-                <span className="used">{glm.sessions} server sessions</span>
-                <span className="rem">{glm.activeDays} active days</span>
-              </div>
-              <div className="budget-foot">
-                <span className="used">last seen</span>
-                <span className="rem">{glm.last}</span>
-              </div>
+              <ProviderCard
+                status="ok"
+                name="Claude Code"
+                meta={`${claudeProv?.sessions ?? 0} sessions · local logs`}
+                primary={claudeProv?.tokens ?? "—"}
+                secondary={claudeProv?.cost}
+              />
+              {showCopilot && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.copilot)}
+                  name="GitHub Copilot"
+                  meta={vendorMeta(snapshot.vendor?.copilot, "not connected")}
+                  primary={vendorPrimary(snapshot.vendor?.copilot)}
+                />
+              )}
+              {(showGlm || glm.sessions > 0) && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.glm)}
+                  name="GLM / z.ai"
+                  meta={vendorMeta(snapshot.vendor?.glm, "no API key set")}
+                  primary={vendorPrimary(snapshot.vendor?.glm)}
+                  detail={`${glm.sessions} server sessions · ${glm.activeDays} active days · last ${glm.last}`}
+                />
+              )}
+              <ProviderCard
+                status={vendorState(snapshot.vendor?.anthropic)}
+                name="Anthropic (org)"
+                meta={vendorMeta(snapshot.vendor?.anthropic, "add an admin API key for org cost")}
+                primary={vendorPrimary(snapshot.vendor?.anthropic)}
+              />
             </div>
             <div className="note">
               <InfoIcon />
-              <p>{glm.note}</p>
+              <p>
+                Live figures come from each provider’s API; Claude totals and GLM
+                activity are read from local logs.
+              </p>
             </div>
           </section>
         )}
@@ -419,6 +428,12 @@ export default function App() {
             setLiveClaude={setLiveClaude}
             setLaunchOnStartup={setLaunchOnStartup}
             setTooltipProvider={setTooltipProvider}
+            copilotConnected={settings.copilotConnected}
+            connectCopilotStart={connectCopilotStart}
+            copilotPoll={copilotPoll}
+            copilotCancel={copilotCancel}
+            disconnectCopilot={disconnectCopilot}
+            reloadSettings={reloadSettings}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -528,6 +543,115 @@ function GlmOverview({
         </>
       )}
     </>
+  );
+}
+
+function CopilotOverview({
+  vendor,
+  minimal,
+  onConnect,
+}: {
+  vendor: VendorStatus | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+
+  return (
+    <>
+      <div className="sec-head">
+        <h2>Copilot premium requests</h2>
+        <span className="meta">live · via Copilot token</span>
+      </div>
+
+      {live && vendor ? (
+        <>
+          <div className="kpis glm-kpis">
+            <div className="kpi accent">
+              <div className="k-label">{vendor.secondary || "premium requests"}</div>
+              <div className="k-num">{vendor.primary}</div>
+              <div className="k-sub">live</div>
+            </div>
+          </div>
+          {!minimal && vendor.detail.length > 0 && (
+            <div className="budget" style={{ marginTop: 9 }}>
+              {vendor.detail.map((d) => (
+                <div className="budget-foot" key={d.label} style={{ marginTop: 0 }}>
+                  <span className="used">{d.label}</span>
+                  <span className="rem">{d.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="connect-card">
+          <p className="connect-title">
+            {vendor?.configured
+              ? `Couldn’t read Copilot usage${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Copilot token found"}
+          </p>
+          <p className="connect-sub">
+            Reads your editor / <code>gh</code> CLI Copilot token to show real
+            premium-request quota. If none is found, connect GitHub Copilot to
+            authorize this app.
+          </p>
+          <button className="btn primary" onClick={onConnect}>
+            Connect Copilot →
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---- Providers tab: one unified card per provider ----
+
+function vendorState(s?: VendorStatus): "ok" | "err" | "idle" {
+  if (!s || !s.configured) return "idle";
+  return s.ok ? "ok" : "err";
+}
+
+function vendorMeta(s: VendorStatus | undefined, idleText: string): string {
+  if (!s || !s.configured) return idleText;
+  return s.ok ? s.secondary : s.error || "unavailable";
+}
+
+function vendorPrimary(s?: VendorStatus): string {
+  return s && s.configured && s.ok ? s.primary : "—";
+}
+
+function ProviderCard({
+  status,
+  name,
+  meta,
+  primary,
+  secondary,
+  detail,
+}: {
+  status: "ok" | "err" | "idle";
+  name: string;
+  meta: string;
+  primary: string;
+  secondary?: string;
+  detail?: string;
+}) {
+  return (
+    <div className="prov-row stacked">
+      <div className="prov-head">
+        <span className={`stat ${status}`} />
+        <div>
+          <div className="pname">{name}</div>
+          <div className="pmeta">{meta}</div>
+        </div>
+        <span className="spacer" />
+        <div>
+          <div className="pnum">{primary}</div>
+          {secondary && <div className="pcost">{secondary}</div>}
+        </div>
+      </div>
+      {detail && <div className="prov-sub">{detail}</div>}
+    </div>
   );
 }
 

@@ -2,7 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { isTauriReady } from "../tauriReady";
-import type { PlanKey, SettingsView, TooltipProvider, UsageSnapshot } from "../types";
+import type {
+  CopilotDeviceCode,
+  PlanKey,
+  SettingsView,
+  TooltipProvider,
+  UsageSnapshot,
+} from "../types";
 import { useTauriCommand } from "./useTauriCommand";
 
 type Provider = "glm" | "anthropic";
@@ -24,6 +30,10 @@ export function useUsage() {
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
+  const copilotStartCmd = useTauriCommand<CopilotDeviceCode>("copilot_device_start");
+  const copilotPollCmd = useTauriCommand<string>("copilot_device_poll");
+  const copilotCancelCmd = useTauriCommand<void>("copilot_device_cancel");
+  const disconnectCopilotCmd = useTauriCommand<SettingsView>("disconnect_copilot");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -141,6 +151,33 @@ export function useUsage() {
     [clearKeyCmd, refresh],
   );
 
+  // Re-read settings after an out-of-band change (e.g. a completed Copilot
+  // device-flow connect updates the stored token server-side).
+  const reloadSettings = useCallback(async () => {
+    const view = await settingsCmd.execute();
+    if (view) setSettings(view);
+  }, [settingsCmd]);
+
+  // Copilot device flow: start returns the user code + verification URL; poll
+  // returns "pending" | "slow_down" | "connected" | "denied" | "expired" each tick.
+  const connectCopilotStart = useCallback(
+    () => copilotStartCmd.execute(),
+    [copilotStartCmd],
+  );
+  const copilotPoll = useCallback(() => copilotPollCmd.execute(), [copilotPollCmd]);
+  // Abandon an in-progress connect server-side so the next attempt starts fresh.
+  const copilotCancel = useCallback(() => {
+    void copilotCancelCmd.execute();
+  }, [copilotCancelCmd]);
+
+  const disconnectCopilot = useCallback(async () => {
+    const updated = await disconnectCopilotCmd.execute();
+    if (updated) {
+      setSettings(updated);
+      await refresh();
+    }
+  }, [disconnectCopilotCmd, refresh]);
+
   useEffect(() => {
     if (!isTauriReady()) return;
     let unlisten: (() => void) | undefined;
@@ -172,6 +209,11 @@ export function useUsage() {
     setGlmEndpoint,
     setApiKey,
     clearApiKey,
+    reloadSettings,
+    connectCopilotStart,
+    copilotPoll,
+    copilotCancel,
+    disconnectCopilot,
     refresh,
     reconnectClaude,
     reconnecting: reconnectCmd.isLoading,

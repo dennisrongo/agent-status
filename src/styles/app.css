@@ -14,6 +14,7 @@
   --warn:      oklch(80% 0.15 85);
   --danger:    oklch(70% 0.18 25);
   --violet:    oklch(70% 0.13 290);
+  --copilot:   oklch(72% 0.16 145);
   --font:      -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   --mono:      "JetBrains Mono", "SF Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
@@ -77,11 +78,12 @@ body {
 .seg-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .seg-dot.claude { background: var(--accent); }
 .seg-dot.glm { background: var(--violet); }
+.seg-dot.copilot { background: var(--copilot); }
 
 /* GLM connect empty-state */
 .connect-card { background: var(--surface); border: 1px dashed var(--border-2); border-radius: 10px; padding: 16px 14px; text-align: center; }
 .connect-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
-.connect-sub { font-size: 11px; line-height: 1.5; color: var(--muted); margin: 7px 0 12px; }
+.connect-sub { display: block; font-size: 11px; line-height: 1.5; color: var(--muted); margin: 7px 0 12px; }
 .connect-sub code { font-family: var(--mono); font-size: 10.5px; color: var(--fg); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
 .connect-card.warn { border-style: solid; border-color: color-mix(in oklch, var(--warn) 45%, var(--border-2)); background: color-mix(in oklch, var(--warn) 8%, var(--surface)); }
 .connect-card.warn .connect-title { color: var(--warn); }
@@ -109,6 +111,10 @@ body {
 .sec-head { display: flex; align-items: baseline; justify-content: space-between; margin: 16px 2px 9px; }
 .sec-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 650; }
 .sec-head .meta { font-family: var(--mono); font-size: 10.5px; color: var(--faint); letter-spacing: -0.02em; }
+/* Top-level grouping above the small uppercase section labels — separates
+   general app settings from the per-provider blocks with a labeled rule. */
+.group-head { margin: 22px 2px 4px; padding-top: 16px; border-top: 1px solid var(--border-2); font-size: 13px; font-weight: 700; color: var(--fg); letter-spacing: -0.01em; }
+.group-head:first-child { margin-top: 2px; padding-top: 0; border-top: none; }
 
 /* track / fill */
 .track { height: 9px; border-radius: 6px; background: var(--bar-bg); overflow: hidden; border: 1px solid var(--border); }
@@ -183,6 +189,9 @@ body {
 /* providers */
 .prov { display: flex; flex-direction: column; gap: 8px; }
 .prov-row { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; }
+.prov-row.stacked { flex-direction: column; align-items: stretch; gap: 0; }
+.prov-head { display: flex; align-items: center; gap: 10px; }
+.prov-sub { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border); letter-spacing: -0.02em; }
 .prov-row .stat { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); box-shadow: 0 0 0 3px oklch(74% 0.16 150 / .16); }
 .prov-row .pname { font-size: 12.5px; font-weight: 600; }
 .prov-row .pmeta { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 2px; letter-spacing: -0.02em; }

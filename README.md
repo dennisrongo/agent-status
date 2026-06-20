@@ -98,6 +98,7 @@ The backend scans logs (off-thread via `spawn_blocking`), optionally fetches liv
 | GLM token/cost (local) | `~/.zai/*.log` — lifecycle only | ❌ shown as `—` |
 | GLM 5h/weekly quota (with key) | z.ai monitor API (`/api/monitor/usage/quota/limit`) | ✅ real |
 | Anthropic cost (with admin key) | Anthropic Admin Cost API | ✅ real (org-level) |
+| Copilot premium-request quota | GitHub `copilot_internal/user` (your editor / `gh` token) | ✅ real (per-user) |
 
 \* The Pro/Max subscription "weekly % left" has **no public API**, so ceilings are estimates you set by picking your plan. The Anthropic admin key reports **org-level** cost, not the subscription quota.
 

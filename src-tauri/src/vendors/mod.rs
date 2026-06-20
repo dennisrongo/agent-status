@@ -4,6 +4,7 @@
 
 pub mod anthropic;
 pub mod claude;
+pub mod copilot;
 pub mod glm;
 
 use serde::Serialize;
@@ -61,6 +62,7 @@ impl VendorStatus {
 pub struct VendorReport {
     pub glm: VendorStatus,
     pub anthropic: VendorStatus,
+    pub copilot: VendorStatus,
 }
 
 /// Which providers are actually present on this machine, so the UI can hide the
@@ -69,9 +71,12 @@ pub struct VendorReport {
 /// - `claude`: a Claude Code login token exists, local session logs were found,
 ///   or the `claude` CLI is on PATH.
 /// - `glm`: a z.ai API key is configured, or local MCP server logs exist.
+/// - `copilot`: a Copilot/GitHub OAuth token was found locally (editor token
+///   file or `gh` CLI) or connected in-app.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detection {
     pub claude: bool,
     pub glm: bool,
+    pub copilot: bool,
 }

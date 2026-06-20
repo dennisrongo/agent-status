@@ -28,6 +28,10 @@ pub struct Settings {
     pub zai_key: Option<EncryptedSecret>,
     /// Encrypted Anthropic admin API key.
     pub anthropic_key: Option<EncryptedSecret>,
+    /// Encrypted GitHub Copilot OAuth token, minted via the in-app device flow.
+    /// Tried before any editor/CLI token. Absent when usage is read from a
+    /// locally-discovered token instead.
+    pub copilot_token: Option<EncryptedSecret>,
     /// Use Claude's live usage API (reads the Claude Code OAuth token) for the
     /// Overview meters instead of the local token estimate.
     pub live_claude: bool,
@@ -50,6 +54,7 @@ impl Default for Settings {
             glm_endpoint: glm::DEFAULT_ENDPOINT.to_string(),
             zai_key: None,
             anthropic_key: None,
+            copilot_token: None,
             live_claude: true,
             launch_on_startup: true,
             minimal_view: false,
@@ -67,6 +72,8 @@ pub struct SettingsView {
     pub glm_endpoint: String,
     pub glm_key_set: bool,
     pub anthropic_key_set: bool,
+    /// Whether a Copilot token was connected in-app via the device flow.
+    pub copilot_connected: bool,
     pub live_claude: bool,
     pub launch_on_startup: bool,
     pub minimal_view: bool,
@@ -81,6 +88,7 @@ impl From<&Settings> for SettingsView {
             glm_endpoint: s.glm_endpoint.clone(),
             glm_key_set: s.zai_key.is_some(),
             anthropic_key_set: s.anthropic_key.is_some(),
+            copilot_connected: s.copilot_token.is_some(),
             live_claude: s.live_claude,
             launch_on_startup: s.launch_on_startup,
             minimal_view: s.minimal_view,

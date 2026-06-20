@@ -105,11 +105,13 @@ export interface VendorStatus {
 export interface VendorReport {
   glm: VendorStatus;
   anthropic: VendorStatus;
+  copilot: VendorStatus;
 }
 
 export interface Detection {
   claude: boolean;
   glm: boolean;
+  copilot: boolean;
 }
 
 export interface UsageSnapshot {
@@ -125,9 +127,15 @@ export interface UsageSnapshot {
   detection?: Detection;
 }
 
+export interface CopilotDeviceCode {
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+}
+
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm";
+export type TooltipProvider = "claude" | "glm" | "copilot";
 
 export interface SettingsView {
   plan: PlanKey;
@@ -135,6 +143,7 @@ export interface SettingsView {
   glmEndpoint: string;
   glmKeySet: boolean;
   anthropicKeySet: boolean;
+  copilotConnected: boolean;
   liveClaude: boolean;
   launchOnStartup: boolean;
   minimalView: boolean;

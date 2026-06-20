@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { SettingsView, TooltipProvider } from "../types";
+import type { CopilotDeviceCode, SettingsView, TooltipProvider } from "../types";
 
 interface Props {
   settings: SettingsView;
@@ -12,6 +12,12 @@ interface Props {
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   setMinimalView: (enabled: boolean) => Promise<void>;
   setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
+  copilotConnected: boolean;
+  connectCopilotStart: () => Promise<CopilotDeviceCode | null>;
+  copilotPoll: () => Promise<string | null>;
+  copilotCancel: () => void;
+  disconnectCopilot: () => Promise<void>;
+  reloadSettings: () => Promise<void>;
   keyError: string | null;
 }
 
@@ -34,10 +40,17 @@ export function Settings({
   setLaunchOnStartup,
   setMinimalView,
   setTooltipProvider,
+  copilotConnected,
+  connectCopilotStart,
+  copilotPoll,
+  copilotCancel,
+  disconnectCopilot,
+  reloadSettings,
   keyError,
 }: Props) {
   return (
     <section className="panel">
+      <div className="group-head">General</div>
       <div className="sec-head">
         <h2>Display</h2>
         <span className="meta">{settings.minimalView ? "minimal" : "full"}</span>
@@ -72,28 +85,8 @@ export function Settings({
         >
           <option value="claude">Claude</option>
           <option value="glm">GLM / z.ai</option>
+          <option value="copilot">GitHub Copilot</option>
         </select>
-      </div>
-
-      <div className="sec-head">
-        <h2>Claude usage</h2>
-        <span className="meta">{settings.liveClaude ? "live" : "estimate"}</span>
-      </div>
-      <div className="key-row">
-        <label className="toggle-row">
-          <span>
-            <span className="key-label">Live usage from Claude Code</span>
-            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
-              Reads your Claude Code login to show real session/weekly %. Off = local token estimate.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            className="toggle"
-            checked={settings.liveClaude}
-            onChange={(e) => setLiveClaude(e.target.checked)}
-          />
-        </label>
       </div>
 
       <div className="sec-head">
@@ -138,35 +131,72 @@ export function Settings({
         </label>
       </div>
 
+      <div className="group-head">Providers</div>
       <div className="sec-head">
-        <h2>API keys</h2>
+        <h2>Claude / Anthropic</h2>
+        <span className="meta">{settings.liveClaude ? "live" : "estimate"}</span>
+      </div>
+      <div className="key-row">
+        <label className="toggle-row">
+          <span>
+            <span className="key-label">Live usage from Claude Code</span>
+            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
+              Reads your Claude Code login to show real session/weekly %. Off = local token estimate.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            className="toggle"
+            checked={settings.liveClaude}
+            onChange={(e) => setLiveClaude(e.target.checked)}
+          />
+        </label>
+      </div>
+      <KeyRow
+        label="Anthropic admin API key"
+        hint="sk-ant-admin… — org-level API cost"
+        sub="Org-level API cost via the Anthropic Admin API — separate from the Claude Code subscription usage above (not your weekly % limit)."
+        isSet={settings.anthropicKeySet}
+        onSave={(k) => setApiKey("anthropic", k)}
+        onClear={() => clearApiKey("anthropic")}
+      />
+
+      <div className="sec-head">
+        <h2>GitHub Copilot</h2>
+        <span className="meta">{copilotConnected ? "connected" : "auto / connect"}</span>
+      </div>
+      <CopilotConnect
+        connected={copilotConnected}
+        start={connectCopilotStart}
+        poll={copilotPoll}
+        cancel={copilotCancel}
+        disconnect={disconnectCopilot}
+        onConnected={reloadSettings}
+      />
+
+      <div className="sec-head">
+        <h2>GLM / z.ai</h2>
         <span className="meta">stored encrypted</span>
       </div>
-
       <KeyRow
-        label="z.ai (GLM)"
+        label="API key"
         hint="paste your GLM Coding Plan token"
         sub="From your GLM Coding Plan subscription — used to pull real 5-hour & weekly quota. A standard pay-as-you-go API key won't return plan usage."
         isSet={settings.glmKeySet}
         onSave={(k) => setApiKey("glm", k)}
         onClear={() => clearApiKey("glm")}
       />
-
-      <KeyRow
-        label="Anthropic admin"
-        hint="sk-ant-admin… — org usage/cost (not the subscription %)"
-        isSet={settings.anthropicKeySet}
-        onSave={(k) => setApiKey("anthropic", k)}
-        onClear={() => clearApiKey("anthropic")}
-      />
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Endpoint</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+          Usage API endpoint — verify it for your account / region.
+        </span>
+        <EndpointRow value={settings.glmEndpoint} onSave={setGlmEndpoint} />
+      </div>
 
       {keyError && <p className="key-err">{keyError}</p>}
-
-      <div className="sec-head">
-        <h2>z.ai endpoint</h2>
-        <span className="meta">verify for your account</span>
-      </div>
-      <EndpointRow value={settings.glmEndpoint} onSave={setGlmEndpoint} />
 
       <div className="note">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -256,6 +286,156 @@ function KeyRow({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function CopilotConnect({
+  connected,
+  start,
+  poll,
+  cancel,
+  disconnect,
+  onConnected,
+}: {
+  connected: boolean;
+  start: () => Promise<CopilotDeviceCode | null>;
+  poll: () => Promise<string | null>;
+  cancel: () => void;
+  disconnect: () => Promise<void>;
+  onConnected: () => Promise<void>;
+}) {
+  const [code, setCode] = useState<CopilotDeviceCode | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Monotonic id of the active poll chain. Bumping it invalidates any chain
+  // started earlier (a second Connect click, a Cancel, or unmount), so exactly
+  // one chain is ever live — no orphaned pollers spinning against a device code
+  // the backend has already cleared.
+  const runId = useRef(0);
+
+  // Stop polling if the user navigates away mid-flow.
+  useEffect(() => {
+    return () => {
+      runId.current++;
+    };
+  }, []);
+
+  const begin = async () => {
+    const myRun = ++runId.current;
+    setBusy(true);
+    setMsg(null);
+    const info = await start();
+    setBusy(false);
+    if (runId.current !== myRun) return; // superseded while awaiting start
+    if (!info) {
+      setMsg("Couldn’t start the connection — try again.");
+      return;
+    }
+    setCode(info);
+    const baseMs = Math.max(2, info.interval) * 1000;
+    const tick = async (intervalMs: number) => {
+      if (runId.current !== myRun) return;
+      const status = await poll();
+      if (runId.current !== myRun) return;
+      if (status === "connected") {
+        setCode(null);
+        await onConnected();
+        return;
+      }
+      if (status === "pending") {
+        window.setTimeout(() => tick(intervalMs), intervalMs);
+        return;
+      }
+      if (status === "slow_down") {
+        // Per the OAuth device-flow spec, add 5s to the interval on slow_down
+        // and keep the slower cadence for the rest of the flow.
+        const slower = intervalMs + 5000;
+        window.setTimeout(() => tick(slower), slower);
+        return;
+      }
+      // Terminal: denied / expired / a swallowed backend error (null) / anything
+      // unexpected. Never re-schedule — re-scheduling on a non-"pending" status
+      // is exactly how an orphaned chain could poll forever.
+      setCode(null);
+      setMsg(
+        status === "denied"
+          ? "Authorization was denied."
+          : status === "expired"
+            ? "The code expired — try connecting again."
+            : "Connection stopped — try connecting again.",
+      );
+    };
+    window.setTimeout(() => tick(baseMs), baseMs);
+  };
+
+  const abort = () => {
+    runId.current++; // invalidate the running chain locally…
+    setCode(null);
+    cancel(); // …and drop the pending device code server-side, so a later
+    // Connect mints a fresh code instead of re-handing this dismissed one.
+  };
+
+  if (connected) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Connected</span>
+          <span className="key-status set">● connected</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+          Using the Copilot token you connected here.
+        </span>
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            await disconnect();
+            setBusy(false);
+          }}
+        >
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  if (code) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+          A browser opened to{" "}
+          <code>{code.verificationUri.replace(/^https?:\/\//, "")}</code>. Enter this
+          code to authorize, then come back — this updates automatically.
+        </span>
+        <div className="key-top">
+          <span className="key-label" style={{ fontFamily: "var(--mono)", fontSize: 16, letterSpacing: "0.1em" }}>
+            {code.userCode}
+          </span>
+          <button className="btn" onClick={abort}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="key-row">
+      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+        Usage is read automatically from your editor / <code>gh</code> CLI Copilot
+        token. Only connect here if no token is found automatically.
+      </span>
+      <button className="btn primary" disabled={busy} onClick={begin}>
+        {busy ? "Starting…" : "Connect GitHub Copilot"}
+      </button>
+      <span className="connect-sub" style={{ margin: "8px 0 0", color: "var(--faint)" }}>
+        Authorizes via GitHub’s device flow using VS Code Copilot’s client ID,
+        with <code>read:user</code> scope — the session shows as “VS Code” in your
+        GitHub audit log. Disconnect any time above.
+      </span>
+      {msg && <p className="key-err">{msg}</p>}
     </div>
   );
 }

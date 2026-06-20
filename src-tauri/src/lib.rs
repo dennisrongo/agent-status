@@ -116,6 +116,10 @@ pub fn run() {
             commands::set_glm_endpoint,
             commands::set_api_key,
             commands::clear_api_key,
+            commands::copilot_device_start,
+            commands::copilot_device_poll,
+            commands::copilot_device_cancel,
+            commands::disconnect_copilot,
             commands::open_url,
         ])
         .run(tauri::generate_context!())

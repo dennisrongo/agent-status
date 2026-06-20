@@ -15,7 +15,7 @@ const WIDTH = 300;
  * Compact preview of one provider's usage, shown in its own borderless window
  * when the cursor hovers the tray icon. Listens for the same `usage-updated`
  * broadcast the main window uses, plus a `hover-provider` event that tells it
- * which provider (Claude or GLM) to show. Fits its window to the rendered
+ * which provider (Claude, GLM, or Copilot) to show. Fits its window to the rendered
  * content so spacing is controlled by CSS rather than the OS tooltip.
  */
 export function HoverPopover() {
@@ -40,7 +40,8 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm") setProvider(e.payload);
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot")
+            setProvider(e.payload);
         }),
       );
     })();
@@ -76,11 +77,9 @@ function HoverContent({
   if (!snapshot) {
     return <div className="hp-status">Reading usage…</div>;
   }
-  return provider === "glm" ? (
-    <GlmContent vendor={snapshot.vendor?.glm} />
-  ) : (
-    <ClaudeContent snapshot={snapshot} />
-  );
+  if (provider === "glm") return <GlmContent vendor={snapshot.vendor?.glm} />;
+  if (provider === "copilot") return <CopilotContent vendor={snapshot.vendor?.copilot} />;
+  return <ClaudeContent snapshot={snapshot} />;
 }
 
 function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
@@ -138,6 +137,36 @@ function GlmContent({ vendor }: { vendor: VendorStatus | undefined }) {
         <div className="hp-rows">
           <div className="hp-glm-head">
             <span className="hp-label">{vendor.secondary || "balance"}</span>
+            <span className="hp-pct">{vendor.primary}</span>
+          </div>
+          {vendor.detail.map((d) => (
+            <div className="hp-kv" key={d.label}>
+              <span className="hp-kv-label">{d.label}</span>
+              <span className="hp-kv-val">{d.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function CopilotContent({ vendor }: { vendor: VendorStatus | undefined }) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+
+  return (
+    <>
+      <Head src={live ? "live · Copilot" : "Copilot"} />
+      {!vendor || !vendor.configured ? (
+        <div className="hp-status">Connect GitHub Copilot in the app to see quota.</div>
+      ) : !vendor.ok ? (
+        <div className="hp-status warn">
+          Couldn’t read Copilot usage{vendor.error ? `: ${vendor.error}` : ""}.
+        </div>
+      ) : (
+        <div className="hp-rows">
+          <div className="hp-glm-head">
+            <span className="hp-label">{vendor.secondary || "premium requests"}</span>
             <span className="hp-pct">{vendor.primary}</span>
           </div>
           {vendor.detail.map((d) => (
