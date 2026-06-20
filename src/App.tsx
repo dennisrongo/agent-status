@@ -9,7 +9,7 @@ import { WeekChart } from "./components/WeekChart";
 import { useUsage } from "./hooks/useUsage";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
-import { tileLabel } from "./format";
+import { generatedLabel, tileLabel } from "./format";
 import type { Glm, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
@@ -141,7 +141,7 @@ export default function App() {
         </span>
         <div>
           <h1>Agent Usage</h1>
-          <div className="sub">updated {meta.generated}</div>
+          <div className="sub">updated {generatedLabel(meta.generatedMs, meta.generated)}</div>
         </div>
         <span className="spacer" />
         {/* The plan tier only sets the ceiling for the *local estimate*. When
