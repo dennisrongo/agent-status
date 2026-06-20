@@ -1,7 +1,7 @@
 {
   "version": "0.3.0",
   "notes": "Agent Usage Monitor 0.3.0",
-  "pub_date": "2026-06-20T21:04:38Z",
+  "pub_date": "2026-06-20T21:16:05Z",
   "platforms": {
     "darwin-aarch64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZDNiaEZoV2F0bDVQdkhzOW41T3NJUlFrYWxFMWh6OTlTcDJFcTBSNmFwRlpPNDg0ZWxGM1RVY2RZUEpwL1VSaGhXOEdydkd4OEVFME1QRmJzWldRQUlnOHlYcTJUcHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxOTg5NDc3CWZpbGU6QWdlbnQgVXNhZ2UgTW9uaXRvci5hcHAudGFyLmd6CkJKQVY0TXQvNExiQTloeEpSNGI5N1o3SE5RV3BEY3h1cmVGWDFiUWs4eDBacnNrY0lGSCs0by91cWhuMnFsYThERlhaaWtDSjV3ZGJpd2RlTGpDU0JnPT0K",
@@ -10,6 +10,10 @@
     "darwin-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZDNiaEZoV2F0bDVQdkhzOW41T3NJUlFrYWxFMWh6OTlTcDJFcTBSNmFwRlpPNDg0ZWxGM1RVY2RZUEpwL1VSaGhXOEdydkd4OEVFME1QRmJzWldRQUlnOHlYcTJUcHdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxOTg5NDc3CWZpbGU6QWdlbnQgVXNhZ2UgTW9uaXRvci5hcHAudGFyLmd6CkJKQVY0TXQvNExiQTloeEpSNGI5N1o3SE5RV3BEY3h1cmVGWDFiUWs4eDBacnNrY0lGSCs0by91cWhuMnFsYThERlhaaWtDSjV3ZGJpd2RlTGpDU0JnPT0K",
       "url": "https://github.com/dennisrongo/agent-status/releases/download/v0.3.0/Agent.Usage.Monitor.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZDNiaEZoV2F0bDNzZWUxSldQbTh5Q3JRQmk4NVZubE9oV0YySEpYUlZna01LdVBUMlpTUVhzM0xIcFdoYm9iZEt1c0VnelBuaFZJdmU2alhNQVJ6c0NJcHpqbnp6WFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxOTkwMTY1CWZpbGU6QWdlbnQgVXNhZ2UgTW9uaXRvcl8wLjIuMV94NjQtc2V0dXAubnNpcy56aXAKcnFBS1o5UUZOTHAxYi8zR3RhRSt6K3ZvQ25Yc1oxdEt1NUZQckxXZmFreG9US0lKMjBnTzZBdnd2Y0lJNFZSR2pBbGZhWGcxdXRSTXVaeDlZZjVnQUE9PQo=",
+      "url": "https://github.com/dennisrongo/agent-status/releases/download/v0.3.0/Agent.Usage.Monitor_0.2.1_x64-setup.nsis.zip"
     }
   }
 }
