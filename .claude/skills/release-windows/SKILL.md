@@ -45,19 +45,24 @@ Do **not** trigger for a local dev build (`npm run tauri dev`, `cargo build`).
 2. **Read (don't bump) the version.** The version is whatever `src-tauri/tauri.conf.json` says — macOS already set it. Never bump on the Windows side.
 3. **Confirm the macOS release exists.** `gh release view v<VERSION>` must succeed. If it doesn't, stop — the macOS release must be cut first (Windows only follows). `scripts/release-win.ps1` also enforces this and that `updater/latest.json` is already at this version.
 4. **Typecheck:** `npm install` (if deps changed) then `npm run build`. Fix any error before continuing.
-5. **Build + publish:** `./scripts/release-win.ps1 -Publish`. This builds the NSIS installer (with build-time signing disabled), zips + signs the update payload itself via the `tauri signer` CLI, **merges** `windows-x86_64` into `updater/latest.json` (preserving the darwin entries), and uploads the `.exe` + `.nsis.zip` + `.sig` + `latest.json` into the existing `v<VERSION>` release with `--clobber`. The release notes are left untouched.
+5. **Build + publish:** `./scripts/release-win.ps1 -Publish`. This builds the NSIS installer (with build-time signing disabled), packs the **version-matched** installer into a **STORED (uncompressed) `.nsis.zip` via Windows bsdtar**, signs that zip with the `tauri signer` CLI, **merges** `windows-x86_64` into `updater/latest.json` (preserving the darwin entries), and uploads the `.exe` + `.nsis.zip` + `.sig` + `latest.json` into the existing `v<VERSION>` release with `--clobber`. The release notes are left untouched. (Both the STORED zip and the version-matched installer selection are load-bearing for a working auto-update — see *Notes*.)
 6. **Commit the merged manifest:** verify no secret is staged (`git diff --cached --name-only` must not include `.env` or `*.key`), then commit `updater/latest.json` with a **signed** commit and push:
    ```bash
    git add updater/latest.json
    git commit -S -m "v<VERSION>: add windows-x86_64 updater signature"
    git push origin main
    ```
-7. **Verify externally** that the public endpoint now serves all three platforms:
+7. **Verify externally** that the public endpoint serves all three platforms **and that the Windows payload is a STORED zip at the right version** (this is the check that catches a broken auto-update before users hit it):
    ```bash
+   # manifest: version + platforms, and the windows URL must point at THIS version's zip
    curl -sL https://github.com/dennisrongo/agent-status/releases/latest/download/latest.json \
-     | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['version'],sorted(d['platforms']))"
+     | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['version'],sorted(d['platforms']));print(d['platforms']['windows-x86_64']['url'])"
+
+   # download that windows zip and assert STORED (compress_type 0) + integrity
+   curl -sL -o /tmp/win.zip "<the windows-x86_64 url printed above>"
+   python3 -c "import zipfile;z=zipfile.ZipFile('/tmp/win.zip');print('methods',[i.compress_type for i in z.infolist()]);print('integrity','OK' if z.testzip() is None else 'BAD')"
    ```
-   Expect the released version and `['darwin-aarch64','darwin-x86_64','windows-x86_64']`. Confirm the `.nsis.zip` asset returns HTTP 200.
+   Expect: the released version, `['darwin-aarch64','darwin-x86_64','windows-x86_64']`, a windows URL containing `_<VERSION>_x64-setup.nsis.zip` (not an older version), **methods `[0]` (STORED — `8` means DEFLATE and the client update will fail)**, and integrity `OK`. A DEFLATE payload or a stale version in the URL is a release-breaking regression — re-run step 5 and re-check.
 8. **Report:** release URL, that the manifest now has all three platform keys with the mac signatures intact, that the release notes were preserved, and that installed Windows builds will catch the update on next launch.
 
 See `docs/RELEASE.md` → *Releasing the Windows app* for the full runbook and `scripts/release-win.ps1` for the build itself.
@@ -87,7 +92,9 @@ See `docs/RELEASE.md` → *Releasing the Windows app* for the full runbook and `
 - ❌ Editing the release notes / `--notes` on upload — leave the Mac's changelog. `gh release upload --clobber` (used by the script) never touches the body; don't run `gh release edit`.
 - ❌ Using a different updater key than macOS — the signature won't validate against the embedded pubkey and no install will update. Copy the *same* key.
 - ❌ Committing `.env` or the updater `.key`, or echoing their contents.
-- ✅ Pull → confirm same version + existing release → `release-win.ps1 -Publish` (merges) → signed commit of `updater/latest.json` → verify the live endpoint shows all three platforms.
+- ❌ Packing the `.nsis.zip` with PowerShell `Compress-Archive` — it produces a DEFLATE zip the client updater can't extract (*"Compression method not supported"*). The zip **must** be STORED; the script uses bsdtar for this.
+- ❌ Trusting a bare `*_x64-setup.exe` glob — if a prior version's installer lingers in the bundle dir it sorts first (`0.2.1` before `0.3.0`) and you'd sign/ship the stale one. Always select the version-matched installer.
+- ✅ Pull → confirm same version + existing release → `release-win.ps1 -Publish` (merges) → signed commit of `updater/latest.json` → verify the live endpoint shows all three platforms **and the windows zip is STORED at the right version**.
 
 ## Notes
 
@@ -95,3 +102,6 @@ See `docs/RELEASE.md` → *Releasing the Windows app* for the full runbook and `
 - **Bundle output** lives under `src-tauri/target/release/bundle/nsis/` (host x64 build, no target triple). The updater key for NSIS is `windows-x86_64`.
 - Run the script without `-Publish` to build + merge the manifest locally without touching GitHub (dry run).
 - **Signing is done by `tauri signer sign`, not by `tauri build`.** The script disables `createUpdaterArtifacts` for the build, then zips the installer and signs the zip itself, passing the password with `-p`. This is deliberate: `tauri build`'s build-time signing prompts for the key password on the **console** when `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is absent — and on Windows an env var set to `""` is *deleted*, so an empty password can never reach the build that way. The result was a silent hang at *"Decrypting updater signing key, expect a prompt for password."* If you ever see that message, the build is using build-time signing — the CLI-signing path here avoids it entirely.
+- **The `.nsis.zip` MUST be STORED, not DEFLATE.** `tauri-plugin-updater`'s zip reader is built without the deflate feature, so a DEFLATE entry fails on the client with *"unsupported Zip archive: Compression method not supported"* and **no Windows install can update** — even though the manifest, signature, and HTTP 200 all look correct. tauri-bundler stores the installer uncompressed for exactly this reason. PowerShell `Compress-Archive` always emits DEFLATE (on PS 5.1 / .NET Framework even `-CompressionLevel NoCompression` and `System.IO.Compression.ZipArchive` still tag entries DEFLATE), so the script packs the zip with Windows' bundled **bsdtar** (`%SystemRoot%\System32\tar.exe -a -cf … --options zip:compression=store`). Verify with `python -c "import zipfile;print([i.compress_type for i in zipfile.ZipFile('x.nsis.zip').infolist()])"` → must be `[0]`.
+- **Pick the version-matched installer, not the first glob hit.** A stale `*_x64-setup.exe` from a previous version can remain in `src-tauri/target/release/bundle/nsis/`; a bare glob sorts alphabetically and would sign/upload the older one (manifest says new version, payload is old). The script globs `*_<VERSION>_x64-setup.exe` and aborts if it's absent.
+- **Keep `scripts/release-win.ps1` ASCII-only.** PowerShell 5.1 reads the script as ANSI, so a multi-byte char (e.g. an em dash `—`) inside a string mangles parsing and fails with *"Missing closing '}'"*. Use plain `-`/`--` in code; em dashes are fine only in this Markdown.
