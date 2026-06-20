@@ -330,8 +330,11 @@ try {
 }
 
 $NsisDir = 'src-tauri/target/release/bundle/nsis'
-$Exe = Get-ChildItem "$NsisDir/*_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $Exe) { Die "No NSIS installer under $NsisDir (expected *_x64-setup.exe)." }
+# Match THIS version's installer explicitly. A stale exe from a prior version may
+# still sit in the bundle dir, and a bare *_x64-setup.exe glob sorts alphabetically
+# (0.2.1 before 0.3.0) — picking the wrong, older payload to sign and upload.
+$Exe = Get-ChildItem "$NsisDir/*_${Version}_x64-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $Exe) { Die "No NSIS installer for v$Version under $NsisDir (expected *_${Version}_x64-setup.exe)." }
 
 # --- Build the updater payload (.nsis.zip) and sign it ourselves -------------
 # tauri-bundler names the payload <installer>.nsis.zip; the updater extracts it
