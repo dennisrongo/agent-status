@@ -10,7 +10,7 @@ import { useUsage } from "./hooks/useUsage";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { tileLabel } from "./format";
-import type { Glm, PlanKey, VendorStatus } from "./types";
+import type { Glm, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
 
@@ -190,7 +190,7 @@ export default function App() {
 
       <div className={`body${minimal ? " minimal" : ""}`}>
         {tab === "overview" && (
-          <section className="panel">
+          <section className={`panel prov-${eff}`}>
             {providerTabs.length > 1 && (
               <div className="seg" role="tablist">
                 {providerTabs.map((p) => (
@@ -463,6 +463,69 @@ export default function App() {
   );
 }
 
+/**
+ * Quota windows for an API-key vendor (GLM, Copilot), shown the same way as
+ * Claude's overview: glanceable brand-tinted tiles up top, then status-colored
+ * meter bars under a "Usage" head. Shared so every provider renders identically.
+ */
+function QuotaMeters({
+  windows,
+  srcLabel,
+  minimal,
+}: {
+  windows: VendorKeyVal[];
+  srcLabel: string;
+  minimal: boolean;
+}) {
+  if (windows.length === 0) return null;
+  return (
+    <>
+      <div
+        className="kpis"
+        style={{ gridTemplateColumns: `repeat(${windows.length}, 1fr)` }}
+      >
+        {windows.map((d, i) => (
+          <div className="kpi accent" key={`${d.label}-${i}`}>
+            <div className="k-label">{d.label}</div>
+            <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
+            <div className="k-sub">{d.value || "live"}</div>
+          </div>
+        ))}
+      </div>
+      {!minimal && (
+        <>
+          <div className="sec-head">
+            <h2>Usage</h2>
+            <span className="meta">live · {srcLabel}</span>
+          </div>
+          <div className="meters">
+            {windows.map((d, i) => (
+              <div className={`meter ${d.status ?? "ok"}`} key={`${d.label}-${i}`}>
+                <div className="meter-top">
+                  <span className="ml">{d.label}</span>
+                  {d.value && <span className="reset">{d.value}</span>}
+                </div>
+                <div className="track">
+                  <div
+                    className={`fill ${d.status ?? "ok"}`}
+                    style={{ width: `${d.pct ?? 0}%` }}
+                  />
+                </div>
+                <div className="meter-foot">
+                  <span className="mu live-tag">● live · {srcLabel}</span>
+                  <span className="ml2">
+                    <b>{Math.round(d.pct ?? 0)}%</b> used
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function GlmOverview({
   vendor,
   glm,
@@ -475,6 +538,9 @@ function GlmOverview({
   onConnect: () => void;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
+  // Quota windows carry a pct + status, so they render as glanceable tiles and
+  // status-colored meter bars, mirroring Claude's overview.
+  const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
 
   return (
     <>
@@ -484,25 +550,7 @@ function GlmOverview({
       </div>
 
       {live && vendor ? (
-        <>
-          <div className="kpis glm-kpis">
-            <div className="kpi accent">
-              <div className="k-label">{vendor.secondary || "balance"}</div>
-              <div className="k-num">{vendor.primary}</div>
-              <div className="k-sub">live</div>
-            </div>
-          </div>
-          {!minimal && vendor.detail.length > 0 && (
-            <div className="budget" style={{ marginTop: 9 }}>
-              {vendor.detail.map((d) => (
-                <div className="budget-foot" key={d.label} style={{ marginTop: 0 }}>
-                  <span className="used">{d.label}</span>
-                  <span className="rem">{d.value}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
+        <QuotaMeters windows={windows} srcLabel="z.ai" minimal={minimal} />
       ) : (
         <div className="connect-card">
           <p className="connect-title">
@@ -556,6 +604,10 @@ function CopilotOverview({
   onConnect: () => void;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
+  const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  // Plan / Resets / Overage (and an "unlimited" plan's premium-requests line)
+  // carry no percentage, so they show as plain rows beneath the meters.
+  const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
 
   return (
     <>
@@ -566,17 +618,22 @@ function CopilotOverview({
 
       {live && vendor ? (
         <>
-          <div className="kpis glm-kpis">
-            <div className="kpi accent">
-              <div className="k-label">{vendor.secondary || "premium requests"}</div>
-              <div className="k-num">{vendor.primary}</div>
-              <div className="k-sub">live</div>
+          {windows.length > 0 ? (
+            <QuotaMeters windows={windows} srcLabel="Copilot" minimal={minimal} />
+          ) : (
+            // Unlimited plan: no quota to meter, so show the headline instead.
+            <div className="kpis glm-kpis">
+              <div className="kpi accent">
+                <div className="k-label">{vendor.secondary || "premium requests"}</div>
+                <div className="k-num">{vendor.primary}</div>
+                <div className="k-sub">live</div>
+              </div>
             </div>
-          </div>
-          {!minimal && vendor.detail.length > 0 && (
+          )}
+          {!minimal && facts.length > 0 && (
             <div className="budget" style={{ marginTop: 9 }}>
-              {vendor.detail.map((d) => (
-                <div className="budget-foot" key={d.label} style={{ marginTop: 0 }}>
+              {facts.map((d, i) => (
+                <div className="budget-foot" key={`${d.label}-${i}`} style={{ marginTop: 0 }}>
                   <span className="used">{d.label}</span>
                   <span className="rem">{d.value}</span>
                 </div>

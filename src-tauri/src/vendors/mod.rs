@@ -14,6 +14,42 @@ use serde::Serialize;
 pub struct KeyVal {
     pub label: String,
     pub value: String,
+    /// Percent used (0–100) when this row is a quota meter, so the UI can draw a
+    /// status-colored progress bar consistent with Claude's. `None` for plain
+    /// text rows, in which case it's omitted from the JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pct: Option<f64>,
+    /// Meter severity ("ok"/"warn"/"danger"), paired with `pct`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<&'static str>,
+}
+
+impl KeyVal {
+    /// A plain labelled text row (no progress bar).
+    pub fn text(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), pct: None, status: None }
+    }
+
+    /// A quota meter row: the UI renders a status-colored bar at `pct`. The
+    /// percent is rounded to one decimal to match Claude's buckets and clamped
+    /// to 0–100 so a bad payload can't render a >100% bar or a negative fill;
+    /// the severity uses the same thresholds as the local scanner's `status_for`.
+    pub fn meter(label: impl Into<String>, value: impl Into<String>, pct: f64) -> Self {
+        let pct = ((pct * 10.0).round() / 10.0).clamp(0.0, 100.0);
+        let status = if pct < 70.0 {
+            "ok"
+        } else if pct < 90.0 {
+            "warn"
+        } else {
+            "danger"
+        };
+        Self { label: label.into(), value: value.into(), pct: Some(pct), status: Some(status) }
+    }
+}
+
+/// Trim a reset timestamp to its date part (`2026-07-01T00:00:00Z` -> `2026-07-01`).
+pub(crate) fn short_date(s: &str) -> String {
+    s.split(['T', ' ']).next().unwrap_or(s).to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]

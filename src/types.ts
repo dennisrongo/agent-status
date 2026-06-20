@@ -91,6 +91,9 @@ export interface Glm {
 export interface VendorKeyVal {
   label: string;
   value: string;
+  /** Percent used (0–100) when this row is a quota meter; drives the bar. */
+  pct?: number;
+  status?: "ok" | "warn" | "danger";
 }
 
 export interface VendorStatus {

@@ -89,10 +89,7 @@ pub fn parse_cost(v: &Value) -> VendorStatus {
         error: None,
         primary: format!("${:.2}", total),
         secondary: format!("7-day org cost ({currency})"),
-        detail: vec![KeyVal {
-            label: "Reported spend".to_string(),
-            value: format!("${:.2}", total),
-        }],
+        detail: vec![KeyVal::text("Reported spend", format!("${:.2}", total))],
     }
 }
 

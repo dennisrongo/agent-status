@@ -14,6 +14,11 @@
   --warn:      oklch(80% 0.15 85);
   --danger:    oklch(70% 0.18 25);
   --violet:    oklch(70% 0.13 290);
+  /* Per-vendor brand colors for the provider indicators (kept separate from
+     --accent, which the whole app uses). Claude coral/orange (Anthropic),
+     z.ai blue (matches z.ai's own UI), GitHub Copilot green. */
+  --claude:    oklch(70% 0.14 46);
+  --glm:       oklch(64% 0.17 264);
   --copilot:   oklch(72% 0.16 145);
   --font:      -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   --mono:      "JetBrains Mono", "SF Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
@@ -76,8 +81,8 @@ body {
 .seg-btn:hover { color: var(--muted); }
 .seg-btn[aria-selected="true"] { background: var(--surface-2); color: var(--fg); box-shadow: 0 1px 2px oklch(0% 0 0 / .25); }
 .seg-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.seg-dot.claude { background: var(--accent); }
-.seg-dot.glm { background: var(--violet); }
+.seg-dot.claude { background: var(--claude); }
+.seg-dot.glm { background: var(--glm); }
 .seg-dot.copilot { background: var(--copilot); }
 
 /* GLM connect empty-state */
@@ -104,7 +109,14 @@ body {
 .kpi .k-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
 .kpi .k-num { font-family: var(--mono); font-size: 21px; font-weight: 600; letter-spacing: -0.03em; margin-top: 7px; line-height: 1; font-variant-numeric: tabular-nums; }
 .kpi .k-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; letter-spacing: -0.02em; }
-.kpi.accent .k-num { color: var(--accent); }
+/* The active provider tints its headline numbers + chart with its brand color
+   (--brand), set per-provider below; status colors (ok/warn/danger) stay as-is
+   so a near-limit meter still reads red regardless of brand. */
+.panel.prov-claude  { --brand: var(--claude); }
+.panel.prov-glm     { --brand: var(--glm); }
+.panel.prov-copilot { --brand: var(--copilot); }
+
+.kpi.accent .k-num { color: var(--brand, var(--accent)); }
 .kpi.ok .k-num { color: var(--ok); }
 
 /* section heads */
@@ -157,8 +169,6 @@ body {
 .hp-pct { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
 .hp-status { font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 .hp-status.warn { color: var(--warn); }
-.hp-glm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.hp-glm-head .hp-pct { color: var(--accent); }
 .hp-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .hp-kv-label { font-size: 11.5px; color: var(--muted); }
 .hp-kv-val { font-family: var(--mono); font-size: 11px; color: var(--fg); letter-spacing: -0.02em; white-space: nowrap; }
@@ -168,8 +178,8 @@ body {
 .bars { display: flex; align-items: flex-end; gap: 7px; height: 84px; margin-bottom: 8px; }
 .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; position: relative; }
 .bar-wrap { width: 100%; flex: 1; display: flex; align-items: flex-end; }
-.bar { width: 100%; min-height: 3px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--accent), oklch(50% 0.1 210)); opacity: .92; transition: .15s; }
-.bar-col:hover .bar { opacity: 1; box-shadow: 0 0 0 2px oklch(72% 0.15 200 / .3); }
+.bar { width: 100%; min-height: 3px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand, var(--accent)), color-mix(in oklab, var(--brand, var(--accent)) 55%, var(--bg))); opacity: .92; transition: .15s; }
+.bar-col:hover .bar { opacity: 1; box-shadow: 0 0 0 2px color-mix(in oklab, var(--brand, var(--accent)), transparent 70%); }
 .bar-col .day { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 .bar-col .tip { position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 6px; padding: 4px 7px; font-family: var(--mono); font-size: 10px; white-space: nowrap; color: var(--fg); opacity: 0; pointer-events: none; transition: .12s; z-index: 5; }
 .bar-col:hover .tip { opacity: 1; }

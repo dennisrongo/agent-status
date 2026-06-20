@@ -77,8 +77,24 @@ function HoverContent({
   if (!snapshot) {
     return <div className="hp-status">Reading usage…</div>;
   }
-  if (provider === "glm") return <GlmContent vendor={snapshot.vendor?.glm} />;
-  if (provider === "copilot") return <CopilotContent vendor={snapshot.vendor?.copilot} />;
+  if (provider === "glm")
+    return (
+      <VendorMeters
+        vendor={snapshot.vendor?.glm}
+        srcLabel="z.ai"
+        setupHint="Add a GLM API key in the app to see quota."
+        errorLead="Couldn’t reach z.ai"
+      />
+    );
+  if (provider === "copilot")
+    return (
+      <VendorMeters
+        vendor={snapshot.vendor?.copilot}
+        srcLabel="Copilot"
+        setupHint="Connect GitHub Copilot in the app to see quota."
+        errorLead="Couldn’t read Copilot usage"
+      />
+    );
   return <ClaudeContent snapshot={snapshot} />;
 }
 
@@ -100,20 +116,13 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
       ) : (
         <div className="hp-rows">
           {limits.buckets.slice(0, 3).map((b) => (
-            <div className="hp-row" key={b.name}>
-              <div className="hp-line">
-                <span className={`hp-dot ${b.status}`} />
-                <span className="hp-label">{tileLabel(b.name)}</span>
-                <span className="hp-reset">resets {b.reset}</span>
-                <span className="hp-pct">{b.usedPct}%</span>
-              </div>
-              <div className="track">
-                <div
-                  className={`fill ${b.status}`}
-                  style={{ width: `${b.usedPct}%` }}
-                />
-              </div>
-            </div>
+            <MeterRow
+              key={b.name}
+              status={b.status}
+              label={tileLabel(b.name)}
+              aux={`resets ${b.reset}`}
+              pct={b.usedPct}
+            />
           ))}
         </div>
       )}
@@ -121,60 +130,83 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
   );
 }
 
-function GlmContent({ vendor }: { vendor: VendorStatus | undefined }) {
-  const live = Boolean(vendor?.configured && vendor.ok);
-
+/**
+ * One quota meter: a status dot, label, faint right-aligned aux text, the
+ * percent, and a progress bar below. Shared by Claude buckets and GLM quota
+ * windows so both providers render identically.
+ */
+function MeterRow({
+  status,
+  label,
+  aux,
+  pct,
+}: {
+  status: "ok" | "warn" | "danger";
+  label: string;
+  aux: string;
+  pct: number;
+}) {
   return (
-    <>
-      <Head src={live ? "live · z.ai" : "z.ai"} />
-      {!vendor || !vendor.configured ? (
-        <div className="hp-status">Add a GLM API key in the app to see quota.</div>
-      ) : !vendor.ok ? (
-        <div className="hp-status warn">
-          Couldn’t reach z.ai{vendor.error ? `: ${vendor.error}` : ""}.
-        </div>
-      ) : (
-        <div className="hp-rows">
-          <div className="hp-glm-head">
-            <span className="hp-label">{vendor.secondary || "balance"}</span>
-            <span className="hp-pct">{vendor.primary}</span>
-          </div>
-          {vendor.detail.map((d) => (
-            <div className="hp-kv" key={d.label}>
-              <span className="hp-kv-label">{d.label}</span>
-              <span className="hp-kv-val">{d.value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
+    <div className="hp-row">
+      <div className="hp-line">
+        <span className={`hp-dot ${status}`} />
+        <span className="hp-label">{label}</span>
+        <span className="hp-reset">{aux}</span>
+        <span className="hp-pct">{pct}%</span>
+      </div>
+      <div className="track">
+        <div className={`fill ${status}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
   );
 }
 
-function CopilotContent({ vendor }: { vendor: VendorStatus | undefined }) {
+/**
+ * Live usage for an API-key vendor (GLM, Copilot). Each quota window renders as
+ * a MeterRow — same status dot + bar as Claude's buckets — while non-metered
+ * facts (plan, reset date) fall back to a plain key/value line.
+ */
+function VendorMeters({
+  vendor,
+  srcLabel,
+  setupHint,
+  errorLead,
+}: {
+  vendor: VendorStatus | undefined;
+  srcLabel: string;
+  setupHint: string;
+  errorLead: string;
+}) {
   const live = Boolean(vendor?.configured && vendor.ok);
 
   return (
     <>
-      <Head src={live ? "live · Copilot" : "Copilot"} />
+      <Head src={live ? `live · ${srcLabel}` : srcLabel} />
       {!vendor || !vendor.configured ? (
-        <div className="hp-status">Connect GitHub Copilot in the app to see quota.</div>
+        <div className="hp-status">{setupHint}</div>
       ) : !vendor.ok ? (
         <div className="hp-status warn">
-          Couldn’t read Copilot usage{vendor.error ? `: ${vendor.error}` : ""}.
+          {errorLead}
+          {vendor.error ? `: ${vendor.error}` : ""}.
         </div>
       ) : (
         <div className="hp-rows">
-          <div className="hp-glm-head">
-            <span className="hp-label">{vendor.secondary || "premium requests"}</span>
-            <span className="hp-pct">{vendor.primary}</span>
-          </div>
-          {vendor.detail.map((d) => (
-            <div className="hp-kv" key={d.label}>
-              <span className="hp-kv-label">{d.label}</span>
-              <span className="hp-kv-val">{d.value}</span>
-            </div>
-          ))}
+          {vendor.detail.map((d, i) =>
+            d.pct != null ? (
+              <MeterRow
+                key={`${d.label}-${i}`}
+                status={d.status ?? "ok"}
+                label={d.label}
+                aux={d.value}
+                pct={d.pct}
+              />
+            ) : (
+              <div className="hp-kv" key={`${d.label}-${i}`}>
+                <span className="hp-kv-label">{d.label}</span>
+                <span className="hp-kv-val">{d.value}</span>
+              </div>
+            ),
+          )}
         </div>
       )}
     </>

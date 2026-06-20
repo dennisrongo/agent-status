@@ -3,13 +3,16 @@
 //! Uses z.ai's monitor API: `GET /api/monitor/usage/quota/limit`. The coding-plan
 //! token is passed in the `Authorization` header WITHOUT a `Bearer` prefix.
 //! Response shape: `{ "data": { "limits": [ { type, percentage, currentValue,
-//! total, nextResetTime, ... } ] } }` with 5-hour and weekly token windows.
+//! total, nextResetTime, ... } ] } }`. The live `type` values are `TOKENS_LIMIT`
+//! (z.ai's "5 Hours Quota" — the rolling 5-hour coding window) and `TIME_LIMIT`
+//! (z.ai's "Total Monthly Web Search / Reader / Zread Quota" — the monthly tool
+//! quota); the names don't match their windows, so `parse` maps by meaning.
 //! The base URL is configurable (z.ai global vs. open.bigmodel.cn for CN).
 
 use serde_json::Value;
 use std::time::Duration;
 
-use super::{KeyVal, VendorStatus};
+use super::{short_date, KeyVal, VendorStatus};
 
 pub const DEFAULT_ENDPOINT: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 
@@ -73,6 +76,7 @@ pub fn parse(v: &Value) -> VendorStatus {
     let mut detail = Vec::new();
     let mut five_h: Option<f64> = None;
     let mut weekly: Option<f64> = None;
+    let mut monthly: Option<f64> = None;
 
     for lim in limits {
         let typ = lim.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -84,33 +88,67 @@ pub fn parse(v: &Value) -> VendorStatus {
             .or_else(|| match (used, total) {
                 (Some(u), Some(t)) if t > 0.0 => Some(u / t * 100.0),
                 _ => None,
-            });
+            })
+            // Reject NaN/inf (e.g. a string "NaN") so it can't render as
+            // "NaN% used" or a bogus "danger" bar — mirrors copilot.rs.
+            .filter(|p| p.is_finite());
 
+        // z.ai's live monitor returns `TOKENS_LIMIT` for the 5-hour coding quota
+        // (z.ai's "5 Hours Quota") and `TIME_LIMIT` for the monthly tool quota
+        // (z.ai's "Total Monthly Web Search / Reader / Zread Quota"). Older/other
+        // shapes may use "5h"/"weekly"/"mcp". Map them all to clean, Claude-style
+        // labels; never surface the raw ALL_CAPS identifier.
         let tl = typ.to_lowercase();
-        let (label, is_5h, is_week) = if tl.contains("5h") || tl.contains("5 h") || tl.contains("5-h")
-        {
-            ("5-hour", true, false)
-        } else if tl.contains("week") {
-            ("Weekly", false, true)
+        let is_week = tl.contains("week");
+        // Match "time" only as a whole word so "runtime"/"real-time" aren't
+        // misread as the monthly window; z.ai's real type is a standalone
+        // TIME_LIMIT.
+        let is_month = tl.contains("month")
+            || tl.split(|c: char| !c.is_alphanumeric()).any(|w| w == "time");
+        let is_5h = tl.contains("5h")
+            || tl.contains("5 h")
+            || tl.contains("5-h")
+            // A bare token-count limit is the 5-hour coding window, unless the
+            // type already names a longer window.
+            || (tl.contains("token") && !is_week && !is_month);
+
+        let label: String = if is_5h {
+            "5-hour".to_string()
+        } else if is_week {
+            "Weekly".to_string()
+        } else if is_month {
+            "Monthly tools".to_string()
         } else if tl.contains("mcp") {
-            ("MCP", false, false)
+            "MCP".to_string()
         } else if typ.is_empty() {
             continue;
         } else {
-            (typ, false, false)
+            humanize(typ)
         };
 
+        // Faint right-aligned slot, parallel to Claude's "resets X". Prefer the
+        // reset date (z.ai gives one on the monthly window); else the used/total
+        // amount. Only string timestamps are formatted — an epoch number is left
+        // unshown rather than risk a wrong date. The percentage drives the bar.
+        let reset = lim
+            .get("nextResetTime")
+            .and_then(|d| d.as_str())
+            .map(short_date)
+            .filter(|s| !s.is_empty());
+
         let Some(p) = pct else { continue };
-        let value = match (used, total) {
-            (Some(u), Some(t)) => format!("{} / {} · {:.0}%", fmt_count(u), fmt_count(t), p),
-            _ => format!("{:.0}% used", p),
+        let value = match (&reset, used, total) {
+            (Some(r), _, _) => format!("resets {r}"),
+            (None, Some(u), Some(t)) => format!("{} / {}", fmt_count(u), fmt_count(t)),
+            _ => String::new(),
         };
-        detail.push(KeyVal { label: label.to_string(), value });
+        detail.push(KeyVal::meter(&label, value, p));
         if is_5h {
             five_h = Some(p);
-        }
-        if is_week {
+        } else if is_week {
             weekly = Some(p);
+        } else if is_month {
+            monthly = Some(p);
         }
     }
 
@@ -118,11 +156,16 @@ pub fn parse(v: &Value) -> VendorStatus {
         return shape_error("no recognized quota limits in response");
     }
 
-    // Headline: weekly usage if present, else the 5-hour window.
-    let (used, label) = match (weekly, five_h) {
-        (Some(w), _) => (w, "weekly quota used"),
-        (None, Some(f)) => (f, "5-hour quota used"),
-        _ => (0.0, "quota"),
+    // Headline: weekly usage if present, else the 5-hour window, else the
+    // monthly tool quota.
+    let (used, label) = if let Some(w) = weekly {
+        (w, "weekly quota used")
+    } else if let Some(f) = five_h {
+        (f, "5-hour quota used")
+    } else if let Some(m) = monthly {
+        (m, "monthly quota used")
+    } else {
+        (0.0, "quota")
     };
 
     VendorStatus {
@@ -151,6 +194,29 @@ fn value_as_f64(v: &Value) -> Option<f64> {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.parse::<f64>().ok(),
         _ => None,
+    }
+}
+
+/// Turn a raw API type like `"FOO_BAR_LIMIT"` into a display label `"Foo bar"`,
+/// so an unrecognized window never renders as a raw ALL_CAPS identifier.
+fn humanize(typ: &str) -> String {
+    let words: Vec<String> = typ
+        .split(|c: char| c == '_' || c == '-' || c.is_whitespace())
+        .filter(|w| !w.is_empty() && !w.eq_ignore_ascii_case("limit"))
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
+                None => String::new(),
+            }
+        })
+        .collect();
+    if words.is_empty() {
+        typ.trim().to_string()
+    } else {
+        words.join(" ")
     }
 }
 
@@ -204,8 +270,82 @@ mod tests {
         ] } });
         let s = parse(&v);
         assert!(s.ok);
-        // 100/400 = 25% used -> 75% left
-        assert!(s.detail[0].value.contains("25%"));
+        // 100/400 = 25% used; the percent now rides on `pct` (drives the bar),
+        // while `value` carries the used/total amount.
+        assert_eq!(s.detail[0].pct, Some(25.0));
+        assert_eq!(s.detail[0].status, Some("ok"));
+        assert!(s.detail[0].value.contains("100 / 400"));
+    }
+
+    #[test]
+    fn maps_real_zai_token_and_time_limits() {
+        // z.ai's live monitor uses TOKENS_LIMIT (5-hour coding quota) and
+        // TIME_LIMIT (monthly web-search/reader/zread quota).
+        let v = json!({ "data": { "limits": [
+            { "type": "TIME_LIMIT", "percentage": 1 },
+            { "type": "TOKENS_LIMIT", "percentage": 0 }
+        ] } });
+        let s = parse(&v);
+        assert!(s.ok);
+        let labels: Vec<_> = s.detail.iter().map(|d| d.label.as_str()).collect();
+        assert!(labels.contains(&"Monthly tools"), "got {labels:?}");
+        assert!(labels.contains(&"5-hour"), "got {labels:?}");
+        // 5-hour is the coding throttle → it drives the headline.
+        assert_eq!(s.secondary, "5-hour quota used");
+    }
+
+    #[test]
+    fn non_finite_percentage_is_skipped() {
+        // A hostile/garbled `"NaN"` must not render as "NaN% used" or a bogus
+        // "danger" meter; the only limit is dropped → no usable rows.
+        let v = json!({ "data": { "limits": [
+            { "type": "TOKENS_LIMIT", "percentage": "NaN" }
+        ] } });
+        let s = parse(&v);
+        assert!(!s.ok);
+    }
+
+    #[test]
+    fn meter_pct_is_clamped() {
+        let v = json!({ "data": { "limits": [
+            { "type": "TOKENS_LIMIT", "percentage": 250 }
+        ] } });
+        let s = parse(&v);
+        assert_eq!(s.detail[0].pct, Some(100.0));
+        assert_eq!(s.detail[0].status, Some("danger"));
+    }
+
+    #[test]
+    fn time_is_matched_only_as_a_whole_word() {
+        // "runtime" contains the substring "time" but must NOT be read as the
+        // monthly window.
+        let v = json!({ "data": { "limits": [
+            { "type": "RUNTIME_LIMIT", "percentage": 50 }
+        ] } });
+        let s = parse(&v);
+        assert!(s.ok);
+        assert_eq!(s.detail[0].label, "Runtime");
+    }
+
+    #[test]
+    fn reset_time_fills_the_faint_slot() {
+        let v = json!({ "data": { "limits": [
+            { "type": "TIME_LIMIT", "percentage": 1, "nextResetTime": "2026-06-24 17:13:00" }
+        ] } });
+        let s = parse(&v);
+        let m = s.detail.iter().find(|d| d.label == "Monthly tools").unwrap();
+        assert_eq!(m.value, "resets 2026-06-24");
+    }
+
+    #[test]
+    fn humanizes_unknown_type() {
+        assert_eq!(humanize("FOO_BAR_LIMIT"), "Foo Bar");
+        assert_eq!(humanize("TOKENS_LIMIT"), "Tokens");
+        let s = parse(&json!({ "data": { "limits": [
+            { "type": "SOMETHING_NEW", "percentage": 5 }
+        ] } }));
+        assert!(s.ok);
+        assert_eq!(s.detail[0].label, "Something New");
     }
 
     #[test]

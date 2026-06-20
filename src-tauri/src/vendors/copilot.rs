@@ -18,7 +18,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
-use super::{KeyVal, VendorStatus};
+use super::{short_date, KeyVal, VendorStatus};
 
 const ENDPOINT: &str = "https://api.github.com/copilot_internal/user";
 
@@ -119,18 +119,12 @@ pub fn parse(v: &Value) -> VendorStatus {
 
     let unlimited = snap.get("unlimited").and_then(|u| u.as_bool()).unwrap_or(false);
 
-    let mut detail = vec![KeyVal {
-        label: "Plan".to_string(),
-        value: plan.clone(),
-    }];
+    let mut detail = vec![KeyVal::text("Plan", plan.clone())];
 
     if unlimited {
-        detail.push(KeyVal {
-            label: "Premium requests".to_string(),
-            value: "unlimited".to_string(),
-        });
+        detail.push(KeyVal::text("Premium requests", "unlimited"));
         if let Some(r) = &reset {
-            detail.push(KeyVal { label: "Resets".to_string(), value: r.clone() });
+            detail.push(KeyVal::text("Resets", r.clone()));
         }
         return VendorStatus {
             configured: true,
@@ -171,13 +165,16 @@ pub fn parse(v: &Value) -> VendorStatus {
         // Saturate at 0 so an over-quota reading (remaining > entitlement) can't
         // show a negative "used".
         let used = (e - r).max(0.0);
-        detail.push(KeyVal {
-            label: "Premium requests used".to_string(),
-            value: format!("{} / {}", fmt_count(used), fmt_count(e)),
-        });
+        // A quota meter (used %, status-colored bar) so the popover matches
+        // Claude's and GLM's rows; the count rides in the row's faint slot.
+        detail.push(KeyVal::meter(
+            "Premium requests",
+            format!("{} / {}", fmt_count(used), fmt_count(e)),
+            used_pct,
+        ));
     }
     if let Some(r) = &reset {
-        detail.push(KeyVal { label: "Resets".to_string(), value: r.clone() });
+        detail.push(KeyVal::text("Resets", r.clone()));
     }
     if snap
         .get("overage_permitted")
@@ -185,7 +182,7 @@ pub fn parse(v: &Value) -> VendorStatus {
         .unwrap_or(false)
     {
         if let Some(o) = snap.get("overage_count").and_then(value_as_f64) {
-            detail.push(KeyVal { label: "Overage".to_string(), value: fmt_count(o) });
+            detail.push(KeyVal::text("Overage", fmt_count(o)));
         }
     }
 
@@ -500,11 +497,6 @@ fn titleize_plan(s: &str) -> String {
         .join(" ")
 }
 
-/// Trim a reset timestamp to its date part (`2026-07-01T00:00:00Z` -> `2026-07-01`).
-fn short_date(s: &str) -> String {
-    s.split(['T', ' ']).next().unwrap_or(s).to_string()
-}
-
 fn fmt_count(n: f64) -> String {
     // Non-finite input (e.g. a `"NaN"` string in the payload) → em dash rather
     // than a misleading "0".
@@ -552,7 +544,11 @@ mod tests {
         assert!(s.secondary.contains("of"));
         // Plan + used + resets rows.
         assert!(s.detail.iter().any(|d| d.label == "Plan" && d.value == "Individual Pro"));
-        assert!(s.detail.iter().any(|d| d.label == "Premium requests used"));
+        // Premium-requests row is now a meter (carries pct + status for the bar).
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Premium requests" && d.pct == Some(11.5) && d.status == Some("ok")));
     }
 
     #[test]
@@ -618,7 +614,10 @@ mod tests {
         let s = parse(&v);
         assert!(s.ok);
         assert_eq!(s.primary, "0% used");
-        assert!(s.detail.iter().any(|d| d.label == "Premium requests used" && d.value == "0 / 1.5K"));
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Premium requests" && d.value == "0 / 1.5K" && d.pct == Some(0.0)));
     }
 
     #[test]
