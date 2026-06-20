@@ -344,7 +344,18 @@ if (-not $Exe) { Die "No NSIS installer for v$Version under $NsisDir (expected *
 $ZipPath = ($Exe.FullName -replace '\.exe$', '.nsis.zip')
 Remove-Item -LiteralPath $ZipPath -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath "$ZipPath.sig" -ErrorAction SilentlyContinue
-Compress-Archive -LiteralPath $Exe.FullName -DestinationPath $ZipPath -Force
+# The payload MUST be a STORED (uncompressed) zip. The tauri-plugin-updater zip
+# reader is compiled without the deflate feature, so a DEFLATE entry fails on the
+# client with "unsupported Zip archive: Compression method not supported" -- which
+# is exactly what tauri-bundler avoids by storing the installer uncompressed.
+# PowerShell's Compress-Archive can't produce a STORED zip (on PS 5.1 / .NET
+# Framework, even -CompressionLevel NoCompression tags entries as DEFLATE), so we
+# use Windows' bundled bsdtar, which can force method 0. (The .exe is already
+# LZMA-compressed by NSIS, so storing it costs ~nothing.)
+$Bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $Bsdtar)) { Die "Windows bsdtar not found at $Bsdtar - required to build a STORED updater zip the client can extract." }
+& $Bsdtar -a -cf $ZipPath --options zip:compression=store -C $Exe.DirectoryName $Exe.Name
+Assert-LastExit 'bsdtar (stored zip)'
 
 $SignKey = $env:TAURI_SIGNING_PRIVATE_KEY
 $SignPw  = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD; if ($null -eq $SignPw) { $SignPw = '' }
