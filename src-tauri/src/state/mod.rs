@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::scanner::{Bucket, UsageSnapshot};
 use crate::settings::Settings;
+use crate::vendors::VendorStatus;
 
 /// An in-progress Copilot device-flow authorization, held between
 /// `copilot_device_start` and the poll that completes (or expires) it. Carries
@@ -89,6 +90,22 @@ pub struct AppState {
     /// rate-limits hard, so a dead/expired refresh token isn't retried more than
     /// once per `LIVE_CLAUDE_REFRESH_MIN_SECS` while the window stays open.
     pub live_claude_refresh_attempted_at: Option<DateTime<Utc>>,
+    /// Last *successful* live Copilot reading. Editor Copilot clients cache the
+    /// quota and keep showing it through a transient blip; we do the same, so a
+    /// momentary network / HTTP 429 error doesn't flip the card to a "connect"
+    /// prompt (and so the dropdown and the tray preview agree). Cleared on a
+    /// terminal auth failure (revoked token / lost subscription).
+    pub copilot_last_good: Option<VendorStatus>,
+    /// When the Copilot `/copilot_internal/user` endpoint was last attempted.
+    /// Throttles it (see `COPILOT_MIN_SECS`) so opening the dropdown (two
+    /// near-simultaneous collects) and every tray hover don't hammer the
+    /// undocumented endpoint into rate-limiting.
+    pub copilot_attempted_at: Option<DateTime<Utc>>,
+    /// When `copilot_last_good` was captured. Bounds how long a cached reading is
+    /// served through a sustained outage (see `COPILOT_CACHE_MAX_SECS`), so a
+    /// days-long endpoint failure can't keep presenting a quota window that has
+    /// since reset as if it were current.
+    pub copilot_last_good_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -107,6 +124,17 @@ pub const LIVE_CLAUDE_MIN_SECS: i64 = 120;
 /// endpoint on every visible refresh tick.
 pub const LIVE_CLAUDE_REFRESH_MIN_SECS: i64 = 60;
 
+/// Minimum seconds between live Copilot fetches. The quota moves slowly (a
+/// monthly premium-request budget) and the endpoint is undocumented/internal, so
+/// we poll it gently and serve the cached reading in between.
+pub const COPILOT_MIN_SECS: i64 = 120;
+
+/// Longest a cached Copilot reading is served while live fetches keep failing.
+/// Short blips ride on the cache; beyond this the card admits it can't refresh
+/// rather than presenting an increasingly stale quota (or a window that has
+/// since reset) as current.
+pub const COPILOT_CACHE_MAX_SECS: i64 = 1800;
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
@@ -117,6 +145,9 @@ impl AppState {
             live_claude_buckets: None,
             live_claude_attempted_at: None,
             live_claude_refresh_attempted_at: None,
+            copilot_last_good: None,
+            copilot_attempted_at: None,
+            copilot_last_good_at: None,
         }
     }
 }

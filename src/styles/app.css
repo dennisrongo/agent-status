@@ -97,10 +97,6 @@ body {
 .reconnect-btn:disabled { opacity: .55; cursor: default; }
 .connect-err { font-size: 10.5px; line-height: 1.5; color: var(--danger); margin: 10px 0 0; }
 .connect-err code { font-family: var(--mono); font-size: 10px; color: var(--fg); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
-.notice-bar { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.5; color: var(--muted); background: var(--surface); border: 1px solid var(--border-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 11px; }
-.notice-bar svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--accent); }
-.notice-bar b { color: var(--fg); font-weight: 600; }
-.notice-bar code { font-family: var(--mono); font-size: 10px; color: var(--fg); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
 .glm-kpis { grid-template-columns: 1fr; }
 
 /* KPIs */

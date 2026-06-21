@@ -116,6 +116,17 @@ export default function App() {
   const showClaude = snapshot.detection?.claude ?? true;
   const showGlm = snapshot.detection?.glm ?? true;
   const showCopilot = snapshot.detection?.copilot ?? false;
+  // A present, non-expired Claude Code login is required to show ANY Claude
+  // usage now — the local estimate included. Without it (signed out or expired)
+  // the Overview shows a connect/reconnect prompt instead of stats. Detection
+  // reflects the login independent of the live toggle, so this also subsumes the
+  // live-mode signed-out / needs-reauth states the backend flags. Default to
+  // "connected" if a snapshot ever lacks detection, so we never blank a valid
+  // reading on missing data.
+  const claudeExpired = snapshot.detection?.claudeExpired ?? false;
+  const claudeConnected = snapshot.detection
+    ? snapshot.detection.claudeSignedIn && !claudeExpired
+    : true;
   // Claude's local-log totals row for the Providers tab.
   const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
   const available: ("claude" | "glm" | "copilot")[] = [
@@ -151,7 +162,7 @@ export default function App() {
         {/* The plan tier only sets the ceiling for the *local estimate*. When
             live Claude data is active it reports real limits directly, so the
             selector does nothing — hide it to avoid implying it has an effect. */}
-        {!limits.live && (
+        {!limits.live && claudeConnected && (
           <select
             className="plan-select"
             value={plan}
@@ -211,113 +222,85 @@ export default function App() {
               </div>
             )}
 
-            {eff === "claude" && (
-              <>
-                {limits.pending ? (
-                  <div className="connect-card">
-                    <p className="connect-title">Reading live Claude usage…</p>
-                    <p className="connect-sub">{limits.estimateNote}</p>
-                  </div>
-                ) : (
-                  <>
-                    {limits.needsReauth && (
-                      <div className="connect-card warn">
-                        <p className="connect-title">Claude login expired</p>
-                        <p className="connect-sub">
-                          Reconnect in Settings to restore live usage. Your token
-                          &amp; cost totals below are read locally and aren’t affected.
-                        </p>
-                        <button
-                          className="reconnect-btn"
-                          onClick={() => setTab("settings")}
-                        >
-                          Reconnect in Settings →
-                        </button>
-                      </div>
-                    )}
-                    {limits.signedOut && (
-                      <div className="notice-bar">
-                        <InfoIcon />
-                        <span>
-                          <b>Not connected to Claude</b> — showing a local estimate.{" "}
-                          <a
-                            className="about-link"
-                            href="#"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              setTab("settings");
-                            }}
-                          >
-                            Connect in Settings
-                          </a>{" "}
-                          for live session &amp; weekly usage.
-                        </span>
-                      </div>
-                    )}
-                    <div className="kpis">
-                      {limits.buckets.slice(0, 3).map((b, i) => (
-                        <div className={`kpi ${["accent", "ok", ""][i]}`} key={b.name}>
-                          <div className="k-label">{tileLabel(b.name)}</div>
-                          <div className="k-num">{b.usedPct}%</div>
-                          <div className="k-sub">resets {b.reset}</div>
-                        </div>
-                      ))}
+            {eff === "claude" &&
+              (!claudeConnected ? (
+                <ClaudeConnectPrompt
+                  expired={claudeExpired}
+                  onConnect={() => setTab("settings")}
+                />
+              ) : (
+                <>
+                  {limits.pending ? (
+                    <div className="connect-card">
+                      <p className="connect-title">Reading live Claude usage…</p>
+                      <p className="connect-sub">{limits.estimateNote}</p>
                     </div>
-
-                    {!minimal && (
-                      <>
-                        <div className="sec-head">
-                          <h2>Usage</h2>
-                          <span className="meta">
-                            {limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`}
-                          </span>
-                        </div>
-                        <div className="meters">
-                          {limits.buckets.map((b) => (
-                            <Meter bucket={b} key={b.name} />
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </>
-                )}
-
-                {!minimal && (
-                  <>
-                    <div className="sec-head">
-                      <h2>Last 7 days</h2>
-                      <span className="meta">tokens / day</span>
-                    </div>
-                    <WeekChart week={week} />
-
-                    <div className="sec-head">
-                      <h2>By model</h2>
-                      <span className="meta">all-time tokens</span>
-                    </div>
-                    <div className="models">
-                      {models.map((m) => (
-                        <div className="model-row" key={m.key}>
-                          <span className="name">{m.name}</span>
-                          <div className="mtrack">
-                            <div className={`mfill ${m.key}`} style={{ width: `${m.pct}%` }} />
+                  ) : (
+                    <>
+                      <div className="kpis">
+                        {limits.buckets.slice(0, 3).map((b, i) => (
+                          <div className={`kpi ${["accent", "ok", ""][i]}`} key={b.name}>
+                            <div className="k-label">{tileLabel(b.name)}</div>
+                            <div className="k-num">{b.usedPct}%</div>
+                            <div className="k-sub">resets {b.reset}</div>
                           </div>
-                          <span className="mval">
-                            <b>{m.tokens}</b> · {m.cost}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {!limits.pending && (
-                      <div className="note">
-                        <InfoIcon />
-                        <p>{limits.estimateNote}</p>
+                        ))}
                       </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+
+                      {!minimal && (
+                        <>
+                          <div className="sec-head">
+                            <h2>Usage</h2>
+                            <span className="meta">
+                              {limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`}
+                            </span>
+                          </div>
+                          <div className="meters">
+                            {limits.buckets.map((b) => (
+                              <Meter bucket={b} key={b.name} />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {!minimal && (
+                    <>
+                      <div className="sec-head">
+                        <h2>Last 7 days</h2>
+                        <span className="meta">tokens / day</span>
+                      </div>
+                      <WeekChart week={week} />
+
+                      <div className="sec-head">
+                        <h2>By model</h2>
+                        <span className="meta">all-time tokens</span>
+                      </div>
+                      <div className="models">
+                        {models.map((m) => (
+                          <div className="model-row" key={m.key}>
+                            <span className="name">{m.name}</span>
+                            <div className="mtrack">
+                              <div className={`mfill ${m.key}`} style={{ width: `${m.pct}%` }} />
+                            </div>
+                            <span className="mval">
+                              <b>{m.tokens}</b> · {m.cost}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {!limits.pending && (
+                        <div className="note">
+                          <InfoIcon />
+                          <p>{limits.estimateNote}</p>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              ))}
 
             {eff === "glm" && (
               <GlmOverview
@@ -480,9 +463,13 @@ export default function App() {
             <span className="pulse" />
             Live · local CLI data
           </span>
-          <span>
-            {kpi.totalTokens} all-time · {kpi.totalCost}
-          </span>
+          {/* All-time totals are Claude local-log figures — hide them when
+              there's no usable Claude login, same as the rest of its stats. */}
+          {claudeConnected && (
+            <span>
+              {kpi.totalTokens} all-time · {kpi.totalCost}
+            </span>
+          )}
         </footer>
       )}
     </main>
@@ -596,7 +583,10 @@ function GlmOverview({
         </div>
       )}
 
-      {!minimal && (
+      {/* MCP-log activity is GLM data, so it's shown only when GLM is connected
+          (a key is configured). With no key the provider is signed out — just
+          the connect card, no data — matching every other provider. */}
+      {!minimal && vendor?.configured && (
         <>
           <div className="sec-head">
             <h2>Local activity</h2>
@@ -687,6 +677,36 @@ function CopilotOverview({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Shown in place of all Claude usage when there's no usable Claude Code login —
+ * either none at all (signed out) or one that's expired. A present, valid login
+ * is required to show Claude stats now (local estimate included), so this stands
+ * in for the meters / tiles / history with a single connect-or-reconnect prompt.
+ */
+function ClaudeConnectPrompt({
+  expired,
+  onConnect,
+}: {
+  expired: boolean;
+  onConnect: () => void;
+}) {
+  return (
+    <div className={`connect-card${expired ? " warn" : ""}`}>
+      <p className="connect-title">
+        {expired ? "Claude login expired" : "Not connected to Claude"}
+      </p>
+      <p className="connect-sub">
+        {expired
+          ? "Reconnect to see your session limits, token usage, and history."
+          : "Sign in to Claude to see your session limits, token usage, and history."}
+      </p>
+      <button className="reconnect-btn" onClick={onConnect}>
+        {expired ? "Reconnect in Settings →" : "Connect in Settings →"}
+      </button>
+    </div>
   );
 }
 

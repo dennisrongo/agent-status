@@ -44,7 +44,20 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     let _serialized = collect_lock.0.lock().await;
 
     let now = chrono::Utc::now();
-    let (plan, glm_endpoint, zai_key, anthropic_key, copilot_token, live_claude, cached_live, mut live_due, refresh_due) = {
+    let (
+        plan,
+        glm_endpoint,
+        zai_key,
+        anthropic_key,
+        copilot_token,
+        live_claude,
+        cached_live,
+        mut live_due,
+        refresh_due,
+        copilot_cached,
+        copilot_prev,
+        copilot_due,
+    ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
         // Only hit the rate-limited /usage endpoint once per LIVE_CLAUDE_MIN_SECS,
@@ -59,6 +72,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         let refresh_due = guard.live_claude_refresh_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::LIVE_CLAUDE_REFRESH_MIN_SECS
         });
+        // Same idea for the undocumented Copilot endpoint: poll it gently and
+        // serve the cached reading in between (covers the dropdown's two
+        // near-simultaneous collects and every tray hover).
+        let copilot_due = guard.copilot_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::COPILOT_MIN_SECS
+        });
         (
             guard.settings.plan.clone(),
             guard.settings.glm_endpoint.clone(),
@@ -69,6 +88,19 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             guard.live_claude_buckets.clone(),
             live_due,
             refresh_due,
+            // Only serve the cached reading while it's recent enough — a prolonged
+            // outage must not keep showing stale quota (or a since-reset window).
+            guard.copilot_last_good.clone().filter(|_| {
+                guard.copilot_last_good_at.is_some_and(|t| {
+                    (now - t).num_seconds() < crate::state::COPILOT_CACHE_MAX_SECS
+                })
+            }),
+            guard
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.vendor.as_ref())
+                .map(|v| v.copilot.clone()),
+            copilot_due,
         )
     };
 
@@ -127,7 +159,6 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             // stale. The scanner's local estimate stays in `buckets`, but the UI
             // hides it behind the reconnect card while `needs_reauth` is set.
             snapshot.limits.needs_reauth = true;
-            snapshot.limits.can_refresh = ts.has_refresh;
             snapshot.limits.estimate_note = reason;
         } else if live_due {
             live_attempted = true;
@@ -136,7 +167,6 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 // The clock looked valid but the server rejected the token (401):
                 // revoked elsewhere. Prompt a reconnect; don't show stale cache.
                 snapshot.limits.needs_reauth = true;
-                snapshot.limits.can_refresh = ts.has_refresh;
                 snapshot.limits.estimate_note =
                     "Claude login expired — reconnect to restore live usage.".to_string();
             } else if live.ok && !live.buckets.is_empty() {
@@ -165,15 +195,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 snapshot.limits.pending = true;
                 snapshot.limits.estimate_note =
                     format!("Reading live Claude usage… (couldn’t reach it just now: {reason})");
-            } else {
-                // No Claude login at all → live can never work; the local
-                // estimate is the legitimate, clearly-labeled fallback.
-                snapshot.limits.signed_out = true;
-                if let Some(err) = live.error {
-                    snapshot.limits.estimate_note = format!(
-                        "Showing local estimate — couldn’t read live Claude usage ({err}). Limits are against an editable plan ceiling."
-                    );
-                }
+            } else if let Some(err) = live.error {
+                // No Claude login at all → live can never work. detection reports
+                // the signed-out state; just record why the live read failed.
+                snapshot.limits.estimate_note = format!(
+                    "Showing local estimate — couldn’t read live Claude usage ({err}). Limits are against an editable plan ceiling."
+                );
             }
         } else if let Some(cached) = cached_live {
             // Within the throttle window and the token is clock-valid — serve the
@@ -187,10 +214,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             // is still coming. Show pending rather than the estimate.
             snapshot.limits.pending = true;
             snapshot.limits.estimate_note = "Reading live Claude usage…".to_string();
-        } else {
-            // Throttled, no cached reading, and no login → local estimate.
-            snapshot.limits.signed_out = true;
         }
+        // else: throttled, no cached reading, and no login → the scanner's local
+        // estimate stands as-is; detection reports the signed-out state to the UI.
     }
 
     // A successful auto-refresh above rewrote the credential, so the token status
@@ -203,7 +229,8 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // Live vendor fetches (network, async).
     let glm_status = fetch_glm(zai_key, &glm_endpoint).await;
     let anthropic_status = fetch_anthropic(anthropic_key).await;
-    let copilot_status = fetch_copilot(copilot_token).await;
+    let (copilot_status, copilot_fresh_good, copilot_terminal, copilot_attempted) =
+        resolve_copilot(copilot_token, copilot_cached, copilot_prev, copilot_due).await;
 
     // Decide which provider tabs to show. Claude can be detected locally (login
     // token / session logs / CLI on PATH); GLM has no readable local credential,
@@ -215,7 +242,16 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         glm: glm_status.configured,
         copilot: copilot_status.configured,
         claude_signed_in: claude_ts.present,
-        claude_expired: claude_ts.expired,
+        // "Expired" here means the login genuinely needs a manual reconnect — not
+        // merely that the short-lived access token is past its clock. A live
+        // /usage call that failed reauth sets needs_reauth (covers a 401 on a
+        // token the clock still thought valid). Otherwise a clock-expired token
+        // is only truly dead when it has no refresh token: with one it silently
+        // auto-renews on next use, so it's still a valid login (e.g. live mode off
+        // and the token sat idle past its access-token expiry) and its stats must
+        // keep showing rather than flipping to a false "reconnect" prompt.
+        claude_expired: snapshot.limits.needs_reauth
+            || (claude_ts.expired && !claude_ts.has_refresh),
     });
 
     snapshot.vendor = Some(VendorReport {
@@ -236,6 +272,19 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if refresh_attempted {
             guard.live_claude_refresh_attempted_at = Some(now);
+        }
+        // Cache a fresh good Copilot reading; drop the cache on a terminal
+        // failure so a revoked token / lost subscription can't keep serving stale
+        // data. Transient failures leave the cache (and its timestamp) intact.
+        if let Some(good) = copilot_fresh_good {
+            guard.copilot_last_good = Some(good);
+            guard.copilot_last_good_at = Some(now);
+        } else if copilot_terminal {
+            guard.copilot_last_good = None;
+            guard.copilot_last_good_at = None;
+        }
+        if copilot_attempted {
+            guard.copilot_attempted_at = Some(now);
         }
     }
 
@@ -264,15 +313,58 @@ async fn fetch_anthropic(key: Option<EncryptedSecret>) -> VendorStatus {
 
 /// Copilot reads a locally-discovered token by default; a token connected
 /// in-app (device flow) is decrypted and preferred when present.
-async fn fetch_copilot(token: Option<EncryptedSecret>) -> VendorStatus {
+async fn fetch_copilot(token: Option<EncryptedSecret>) -> copilot::FetchOutcome {
     let stored = match token {
         None => None,
         Some(secret) => match encryption::decrypt(&secret) {
             Ok(tok) => Some(tok),
-            Err(e) => return VendorStatus::failed(format!("token decrypt: {e}")),
+            // A stored token we can't decrypt is a durable local problem, not a
+            // transient one — surface it rather than masking it behind the cache.
+            Err(e) => {
+                return copilot::FetchOutcome::Terminal(VendorStatus::failed(format!(
+                    "token decrypt: {e}"
+                )))
+            }
         },
     };
     copilot::fetch(stored).await
+}
+
+/// Resolve the Copilot card with the resilience editor Copilot clients use:
+/// throttle the undocumented endpoint, keep the last good reading through a
+/// transient blip (network / HTTP 429 / 5xx), and only fall back to the
+/// connect/reconnect card on a terminal auth failure or a genuinely missing
+/// token. Returns the status to show, the reading to cache (`Some` only on a
+/// fresh success), whether to *drop* the cache (a terminal failure), and whether
+/// a network fetch was attempted (drives the throttle timestamp).
+async fn resolve_copilot(
+    token: Option<EncryptedSecret>,
+    cached_good: Option<VendorStatus>,
+    prev: Option<VendorStatus>,
+    due: bool,
+) -> (VendorStatus, Option<VendorStatus>, bool, bool) {
+    if !due {
+        // Throttled — don't re-hit the endpoint. Prefer the last good reading;
+        // failing that, repeat whatever was shown last (e.g. a connect card) so a
+        // throttled second collect on open can't contradict the first.
+        let status = cached_good
+            .or(prev)
+            .unwrap_or_else(|| VendorStatus::failed("Copilot status not read yet"));
+        return (status, None, false, false);
+    }
+    match fetch_copilot(token).await {
+        copilot::FetchOutcome::Ok(s) => (s.clone(), Some(s), false, true),
+        copilot::FetchOutcome::Terminal(s) => (s, None, true, true),
+        copilot::FetchOutcome::Transient(err) => match cached_good {
+            // Keep the last good reading instead of flipping to a connect card.
+            Some(good) => (good, None, false, true),
+            // No reading to protect yet (e.g. a blip on the very first fetch).
+            // Don't stamp the throttle — otherwise one transient error would pin
+            // the "couldn't read" card for the full COPILOT_MIN_SECS even though
+            // an immediate retry would likely succeed. Re-attempt next collect.
+            None => (VendorStatus::failed(err), None, false, false),
+        },
+    }
 }
 
 #[tauri::command]
@@ -724,6 +816,11 @@ pub async fn copilot_device_poll(app: AppHandle) -> Result<String, String> {
                 let mut guard = state.lock().map_err(|e| e.to_string())?;
                 guard.settings.copilot_token = Some(secret);
                 guard.pending_copilot_device = None;
+                // New token → re-fetch immediately rather than serving the
+                // throttled/cached reading from before the connect.
+                guard.copilot_attempted_at = None;
+                guard.copilot_last_good = None;
+                guard.copilot_last_good_at = None;
             }
             let snapshot = collect(&app).await?;
             let _ = app.emit("usage-updated", &snapshot);
@@ -741,6 +838,11 @@ pub async fn disconnect_copilot(app: AppHandle) -> Result<SettingsView, String> 
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         guard.settings.copilot_token = None;
         guard.pending_copilot_device = None;
+        // Token source changed (now falls back to a discovered token, if any) →
+        // re-fetch fresh instead of serving the pre-disconnect cached reading.
+        guard.copilot_attempted_at = None;
+        guard.copilot_last_good = None;
+        guard.copilot_last_good_at = None;
         guard.settings.clone()
     };
     let view: SettingsView = (&updated).into();

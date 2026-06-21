@@ -31,10 +31,32 @@ const INTEGRATION_ID: &str = "vscode-chat";
 const USER_AGENT: &str = "GitHubCopilotChat/0.35.0";
 const GH_API_VERSION: &str = "2025-04-01";
 
+/// Classified result of a live Copilot fetch. Lets the caller hold the last good
+/// reading through a transient blip instead of flipping the card to a "connect"
+/// prompt — the same resilience editor Copilot clients use for cached quota.
+pub enum FetchOutcome {
+    /// A usable reading.
+    Ok(VendorStatus),
+    /// Genuinely unusable / needs user action: no token, or a durable
+    /// auth/entitlement rejection (401 / 403 / 404 / other 4xx). Show the
+    /// connect-or-reconnect card and drop any cached reading.
+    Terminal(VendorStatus),
+    /// A transient failure (network, timeout, HTTP 429, 5xx, or an unexpected
+    /// 200 shape) — the caller should keep showing the last good reading.
+    Transient(String),
+}
+
+/// Whether a non-success HTTP status is transient (retry, keep the cached
+/// reading) rather than a durable auth/entitlement error (show the connect
+/// card). 429 (rate-limited) and 5xx are transient; other 4xx are terminal.
+fn http_is_transient(code: u16) -> bool {
+    code == 429 || code >= 500
+}
+
 /// Fetch live Copilot usage. `stored_token` is a token the user connected via the
 /// in-app device flow (tried first); otherwise we use a token an editor/CLI left
 /// on disk, discovered once and cached for the process lifetime.
-pub async fn fetch(stored_token: Option<String>) -> VendorStatus {
+pub async fn fetch(stored_token: Option<String>) -> FetchOutcome {
     let stored = stored_token.filter(|t| !t.trim().is_empty());
     // Track whether the token came from auto-discovery so a 401 can invalidate
     // the cache (e.g. the `gh` CLI rotated its token) without disturbing a
@@ -44,7 +66,7 @@ pub async fn fetch(stored_token: Option<String>) -> VendorStatus {
         Some(t) => t,
         None => match discovered_token().await {
             Some(t) => t,
-            None => return VendorStatus::not_configured(),
+            None => return FetchOutcome::Terminal(VendorStatus::not_configured()),
         },
     };
 
@@ -53,7 +75,7 @@ pub async fn fetch(stored_token: Option<String>) -> VendorStatus {
         .build()
     {
         Ok(c) => c,
-        Err(e) => return VendorStatus::failed(format!("client init: {e}")),
+        Err(e) => return FetchOutcome::Transient(format!("client init: {e}")),
     };
 
     let resp = client
@@ -73,25 +95,43 @@ pub async fn fetch(stored_token: Option<String>) -> VendorStatus {
         Ok(r) => {
             let status = r.status();
             if !status.is_success() {
+                let code = status.as_u16();
                 // A discovered token that's now rejected was likely rotated by
                 // its owner (gh CLI); drop it so the next refresh re-discovers.
-                if status.as_u16() == 401 && from_discovery {
+                if code == 401 && from_discovery {
                     invalidate_discovered();
                 }
-                let hint = match status.as_u16() {
+                let hint = match code {
                     401 => " (Copilot token expired or revoked — reconnect)",
                     403 => " (token not authorized for Copilot)",
                     404 => " (no Copilot subscription on this account)",
+                    429 => " (rate limited — will retry)",
                     _ => "",
                 };
-                return VendorStatus::failed(format!("HTTP {}{hint}", status.as_u16()));
+                let msg = format!("HTTP {code}{hint}");
+                return if http_is_transient(code) {
+                    FetchOutcome::Transient(msg)
+                } else {
+                    FetchOutcome::Terminal(VendorStatus::failed(msg))
+                };
             }
             match r.json::<Value>().await {
-                Ok(v) => parse(&v),
-                Err(e) => VendorStatus::failed(format!("invalid JSON: {e}")),
+                Ok(v) => {
+                    let parsed = parse(&v);
+                    if parsed.ok {
+                        FetchOutcome::Ok(parsed)
+                    } else {
+                        // 200 with an unexpected shape — treat as transient so a
+                        // one-off API hiccup doesn't blank a good cached reading.
+                        FetchOutcome::Transient(
+                            parsed.error.unwrap_or_else(|| "unexpected response".to_string()),
+                        )
+                    }
+                }
+                Err(e) => FetchOutcome::Transient(format!("invalid JSON: {e}")),
             }
         }
-        Err(e) => VendorStatus::failed(format!("request error: {e}")),
+        Err(e) => FetchOutcome::Transient(format!("request error: {e}")),
     }
 }
 
@@ -522,6 +562,18 @@ fn fmt_count(n: f64) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn http_status_classification() {
+        // Transient: rate-limit + server errors → keep the cached reading.
+        for c in [429, 500, 502, 503, 504] {
+            assert!(http_is_transient(c), "HTTP {c} should be transient");
+        }
+        // Terminal: durable auth/entitlement errors → show the connect card.
+        for c in [400, 401, 403, 404, 422] {
+            assert!(!http_is_transient(c), "HTTP {c} should be terminal");
+        }
+    }
 
     #[test]
     fn parses_finite_premium_quota() {

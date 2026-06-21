@@ -99,20 +99,33 @@ function HoverContent({
 }
 
 function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
-  const { limits } = snapshot;
-  const source = limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`;
+  const { limits, detection } = snapshot;
 
+  // A present, non-expired Claude login is required to show any Claude usage
+  // (the local estimate included) — without it, show only a connect / reconnect
+  // line, never the stats, mirroring the main window. Default to "connected" if
+  // a snapshot ever lacks detection so a valid reading isn't blanked.
+  const claudeConnected = detection
+    ? detection.claudeSignedIn && !detection.claudeExpired
+    : true;
+  if (!claudeConnected) {
+    const expired = detection?.claudeExpired ?? false;
+    return (
+      <>
+        <Head src="Claude" />
+        <div className={`hp-status${expired ? " warn" : ""}`}>
+          {expired
+            ? "Claude login expired — reconnect in the app."
+            : "Connect Claude in the app to see usage."}
+        </div>
+      </>
+    );
+  }
+
+  const source = limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`;
   return (
     <>
       <Head src={source} />
-      {limits.needsReauth && (
-        <div className="hp-status warn">
-          Claude login expired — reconnect in the app.
-        </div>
-      )}
-      {limits.signedOut && (
-        <div className="hp-status">Connect Claude in the app to see live usage.</div>
-      )}
       {limits.buckets.length > 0 ? (
         <div className="hp-rows">
           {limits.buckets.slice(0, 3).map((b) => (
@@ -126,12 +139,9 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
           ))}
         </div>
       ) : (
-        !limits.needsReauth &&
-        !limits.signedOut && (
-          <div className="hp-status">
-            {limits.pending ? "Reading live Claude usage…" : "No usage data yet."}
-          </div>
-        )
+        <div className="hp-status">
+          {limits.pending ? "Reading live Claude usage…" : "No usage data yet."}
+        </div>
       )}
     </>
   );

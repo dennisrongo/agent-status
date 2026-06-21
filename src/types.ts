@@ -34,13 +34,6 @@ export interface Limits {
   /** A Claude Code login exists but expired (HTTP 401) — show an actionable
    * "sign in again" state rather than an indistinguishable loading spinner. */
   needsReauth?: boolean;
-  /** Live mode is on but no Claude Code login is present — bars are a local
-   * estimate. Show a "not signed in" hint instead of silently relabeling. */
-  signedOut?: boolean;
-  /** When needsReauth, whether a refresh token is still on hand — i.e. a
-   * one-click in-place reconnect can be tried before the full browser sign-in.
-   * False ⇒ go straight to the OAuth login. */
-  canRefresh?: boolean;
 }
 
 export interface Kpi {
