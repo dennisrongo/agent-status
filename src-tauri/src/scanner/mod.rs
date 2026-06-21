@@ -76,6 +76,12 @@ pub struct Limits {
     /// than silently relabeling to "est." (indistinguishable from logged in).
     #[serde(default)]
     pub signed_out: bool,
+    /// When `needs_reauth` is set, whether a refresh token is still on hand —
+    /// i.e. a one-click in-place reconnect can be tried before falling back to a
+    /// full browser sign-in. False means the refresh token is gone/dead, so the
+    /// UI should go straight to the OAuth login.
+    #[serde(default)]
+    pub can_refresh: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -480,6 +486,7 @@ fn build_snapshot(
         pending: false,
         needs_reauth: false,
         signed_out: false,
+        can_refresh: false,
     };
 
     // ---- per-day week chart (7 days incl. today) ----

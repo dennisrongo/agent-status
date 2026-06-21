@@ -44,9 +44,13 @@ export default function App() {
     copilotCancel,
     disconnectCopilot,
     refresh,
-    reconnectClaude,
-    reconnecting,
-    reconnectError,
+    claudeLoginStart,
+    claudeLoginFinish,
+    claudeLoginCancel,
+    claudeLoginBusy,
+    claudeLoginError,
+    claudeSignOut,
+    claudeSignOutError,
     isLoading,
     error,
     keyError,
@@ -209,42 +213,44 @@ export default function App() {
 
             {eff === "claude" && (
               <>
-                {limits.needsReauth ? (
-                  <div className="connect-card warn">
-                    <p className="connect-title">Claude Code login expired</p>
-                    <p className="connect-sub">
-                      Reconnect to refresh your Claude Code login token in place
-                      and restore live usage. Your token &amp; cost totals below
-                      are read locally and aren’t affected.
-                    </p>
-                    <button
-                      className="reconnect-btn"
-                      disabled={reconnecting}
-                      onClick={() => reconnectClaude()}
-                    >
-                      {reconnecting ? "Reconnecting…" : "Reconnect"}
-                    </button>
-                    {reconnectError && (
-                      <p className="connect-err">
-                        Couldn’t reconnect: {reconnectError}. Open Claude Code
-                        and run <code>/login</code>, then try again.
-                      </p>
-                    )}
-                  </div>
-                ) : limits.pending ? (
+                {limits.pending ? (
                   <div className="connect-card">
                     <p className="connect-title">Reading live Claude usage…</p>
                     <p className="connect-sub">{limits.estimateNote}</p>
                   </div>
                 ) : (
                   <>
+                    {limits.needsReauth && (
+                      <div className="connect-card warn">
+                        <p className="connect-title">Claude login expired</p>
+                        <p className="connect-sub">
+                          Reconnect in Settings to restore live usage. Your token
+                          &amp; cost totals below are read locally and aren’t affected.
+                        </p>
+                        <button
+                          className="reconnect-btn"
+                          onClick={() => setTab("settings")}
+                        >
+                          Reconnect in Settings →
+                        </button>
+                      </div>
+                    )}
                     {limits.signedOut && (
                       <div className="notice-bar">
                         <InfoIcon />
                         <span>
-                          <b>Not signed in to Claude</b> — showing a local
-                          estimate. Run <code>/login</code> in Claude Code for
-                          live session &amp; weekly usage.
+                          <b>Not connected to Claude</b> — showing a local estimate.{" "}
+                          <a
+                            className="about-link"
+                            href="#"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setTab("settings");
+                            }}
+                          >
+                            Connect in Settings
+                          </a>{" "}
+                          for live session &amp; weekly usage.
                         </span>
                       </div>
                     )}
@@ -437,6 +443,15 @@ export default function App() {
             setGlmEndpoint={setGlmEndpoint}
             setRefreshSecs={setRefreshSecs}
             setLiveClaude={setLiveClaude}
+            claudeSignedIn={snapshot?.detection?.claudeSignedIn ?? false}
+            claudeExpired={snapshot?.detection?.claudeExpired ?? false}
+            claudeSignOut={claudeSignOut}
+            claudeSignOutError={claudeSignOutError}
+            claudeLoginStart={claudeLoginStart}
+            claudeLoginFinish={claudeLoginFinish}
+            claudeLoginCancel={claudeLoginCancel}
+            claudeLoginBusy={claudeLoginBusy}
+            claudeLoginError={claudeLoginError}
             setLaunchOnStartup={setLaunchOnStartup}
             setTooltipProvider={setTooltipProvider}
             copilotConnected={settings.copilotConnected}

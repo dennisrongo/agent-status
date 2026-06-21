@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
-import type { CopilotDeviceCode, SettingsView, TooltipProvider } from "../types";
+import type { ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider } from "../types";
 
 interface Props {
   settings: SettingsView;
@@ -9,6 +10,15 @@ interface Props {
   setGlmEndpoint: (endpoint: string) => Promise<void>;
   setRefreshSecs: (secs: number) => Promise<void>;
   setLiveClaude: (enabled: boolean) => Promise<void>;
+  claudeSignedIn: boolean;
+  claudeExpired: boolean;
+  claudeSignOut: () => Promise<unknown>;
+  claudeSignOutError: string | null;
+  claudeLoginStart: () => Promise<ClaudeLoginInfo | null>;
+  claudeLoginFinish: (code: string) => Promise<unknown>;
+  claudeLoginCancel: () => void;
+  claudeLoginBusy: boolean;
+  claudeLoginError: string | null;
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   setMinimalView: (enabled: boolean) => Promise<void>;
   setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
@@ -37,6 +47,15 @@ export function Settings({
   setGlmEndpoint,
   setRefreshSecs,
   setLiveClaude,
+  claudeSignedIn,
+  claudeExpired,
+  claudeSignOut,
+  claudeSignOutError,
+  claudeLoginStart,
+  claudeLoginFinish,
+  claudeLoginCancel,
+  claudeLoginBusy,
+  claudeLoginError,
   setLaunchOnStartup,
   setMinimalView,
   setTooltipProvider,
@@ -134,7 +153,9 @@ export function Settings({
       <div className="group-head">Providers</div>
       <div className="sec-head">
         <h2>Claude / Anthropic</h2>
-        <span className="meta">{settings.liveClaude ? "live" : "estimate"}</span>
+        <span className="meta">
+          {claudeSignedIn && !claudeExpired ? "connected" : "not connected"}
+        </span>
       </div>
       <div className="key-row">
         <label className="toggle-row">
@@ -152,6 +173,18 @@ export function Settings({
           />
         </label>
       </div>
+      {claudeSignedIn && !claudeExpired ? (
+        <ClaudeSignOut signOut={claudeSignOut} signOutError={claudeSignOutError} />
+      ) : (
+        <ClaudeSignIn
+          expired={claudeExpired}
+          start={claudeLoginStart}
+          finish={claudeLoginFinish}
+          cancel={claudeLoginCancel}
+          busy={claudeLoginBusy}
+          error={claudeLoginError}
+        />
+      )}
       <KeyRow
         label="Anthropic admin API key"
         hint="sk-ant-admin… — org-level API cost"
@@ -163,7 +196,7 @@ export function Settings({
 
       <div className="sec-head">
         <h2>GitHub Copilot</h2>
-        <span className="meta">{copilotConnected ? "connected" : "auto / connect"}</span>
+        <span className="meta">{copilotConnected ? "connected" : "not connected"}</span>
       </div>
       <CopilotConnect
         connected={copilotConnected}
@@ -218,6 +251,175 @@ function refreshValue(secs: number): number {
   return REFRESH_OPTIONS.reduce((best, o) =>
     Math.abs(o.secs - secs) < Math.abs(best.secs - secs) ? o : best,
   ).secs;
+}
+
+/** Sign in to Claude from Settings — the counterpart to ClaudeSignOut, so there's
+ * a way back in right where you signed out (the Overview only shows a subtle
+ * "not signed in" link, and only while live mode is on). Same copy-paste OAuth
+ * flow as the Overview: open the browser, paste the CODE#STATE, finish. On
+ * success the snapshot flips claudeSignedIn=true and this is replaced by the
+ * sign-out row. The login is shared with the `claude` CLI, so this signs it in too. */
+function ClaudeSignIn({
+  expired,
+  start,
+  finish,
+  cancel,
+  busy,
+  error,
+}: {
+  expired: boolean;
+  start: () => Promise<ClaudeLoginInfo | null>;
+  finish: (code: string) => Promise<unknown>;
+  cancel: () => void;
+  busy: boolean;
+  error: string | null;
+}) {
+  const [awaiting, setAwaiting] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+
+  const begin = async () => {
+    const info = await start();
+    if (info) {
+      setAuthUrl(info.authorizeUrl);
+      setAwaiting(true);
+    }
+  };
+  const submit = async () => {
+    if (!code.trim() || busy) return;
+    await finish(code.trim());
+    // Success → snapshot sets claudeSignedIn=true → this unmounts.
+  };
+  const abort = () => {
+    cancel();
+    setAwaiting(false);
+    setCode("");
+  };
+
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Claude login</span>
+        <span className="key-status">{expired ? "⚠ expired" : "○ not connected"}</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+        {expired
+          ? "Your Claude login expired — reconnect to restore live usage."
+          : "Connect your Claude Pro/Max account for live session & weekly usage."}{" "}
+        Shares the Claude Code CLI login, so connecting signs <code>claude</code> in too.
+      </span>
+      {awaiting ? (
+        <>
+          <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+            Approve in your browser, then paste the code it shows you.{" "}
+            {authUrl && (
+              <a
+                className="about-link"
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void invoke("open_url", { url: authUrl });
+                }}
+              >
+                Re-open page
+              </a>
+            )}
+          </span>
+          <div className="key-input">
+            <input
+              type="text"
+              value={code}
+              spellCheck={false}
+              autoComplete="off"
+              autoFocus
+              placeholder="Paste code (looks like abc…#xyz…)"
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submit();
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <button
+              className="btn primary"
+              disabled={busy || !code.trim()}
+              onClick={() => void submit()}
+            >
+              {busy ? "Verifying…" : "Finish"}
+            </button>
+            <button className="btn" disabled={busy} onClick={abort}>
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <button className="btn primary" disabled={busy} onClick={() => void begin()}>
+          {busy ? "Starting…" : expired ? "Reconnect Claude" : "Connect Claude"}
+        </button>
+      )}
+      {error && <p className="key-err">{error}</p>}
+    </div>
+  );
+}
+
+/** Full Claude sign-out. The Claude login is the SHARED Claude Code credential
+ * (not an app-only token like Copilot), so this signs the `claude` CLI out too —
+ * hence the warning + an explicit confirm step before the destructive action. */
+function ClaudeSignOut({
+  signOut,
+  signOutError,
+}: {
+  signOut: () => Promise<unknown>;
+  signOutError: string | null;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  // Local flag so the backend error only shows after an actual attempt (not a
+  // stale error from an earlier session). The message itself comes from the
+  // command's error, which carries the specific reason (which store is stuck).
+  const [attempted, setAttempted] = useState(false);
+
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Claude login</span>
+        <span className="key-status set">● connected</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+        Disconnecting removes the Claude Code login (shared with the CLI) — connect
+        again here or with <code>claude /login</code>. The Claude Desktop app has its own
+        separate login and isn’t affected; a running <code>claude</code> session keeps
+        working until you restart it.
+      </span>
+      {confirm ? (
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setAttempted(true);
+              const ok = await signOut();
+              setBusy(false);
+              // On success the snapshot clears claudeSignedIn and this unmounts;
+              // on failure signOutError (from the command) holds the reason.
+              if (ok) setConfirm(false);
+            }}
+          >
+            {busy ? "Disconnecting…" : "Confirm disconnect"}
+          </button>
+          <button className="btn" disabled={busy} onClick={() => setConfirm(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button className="btn" onClick={() => setConfirm(true)}>
+          Disconnect
+        </button>
+      )}
+      {attempted && !busy && signOutError && <p className="key-err">{signOutError}</p>}
+    </div>
+  );
 }
 
 function KeyRow({
@@ -376,13 +578,21 @@ function CopilotConnect({
     // Connect mints a fresh code instead of re-handing this dismissed one.
   };
 
+  // Shared status header so every state shows the same row as the Claude login
+  // (connected / not connected), instead of only showing it when connected.
+  const header = (
+    <div className="key-top">
+      <span className="key-label">Copilot login</span>
+      <span className={`key-status ${connected ? "set" : ""}`}>
+        {connected ? "● connected" : "○ not connected"}
+      </span>
+    </div>
+  );
+
   if (connected) {
     return (
       <div className="key-row">
-        <div className="key-top">
-          <span className="key-label">Connected</span>
-          <span className="key-status set">● connected</span>
-        </div>
+        {header}
         <span className="connect-sub" style={{ margin: "0 0 8px" }}>
           Using the Copilot token you connected here.
         </span>
@@ -404,6 +614,7 @@ function CopilotConnect({
   if (code) {
     return (
       <div className="key-row">
+        {header}
         <span className="connect-sub" style={{ margin: "0 0 6px" }}>
           A browser opened to{" "}
           <code>{code.verificationUri.replace(/^https?:\/\//, "")}</code>. Enter this
@@ -423,6 +634,7 @@ function CopilotConnect({
 
   return (
     <div className="key-row">
+      {header}
       <span className="connect-sub" style={{ margin: "0 0 8px" }}>
         Usage is read automatically from your editor / <code>gh</code> CLI Copilot
         token. Only connect here if no token is found automatically.

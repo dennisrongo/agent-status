@@ -52,12 +52,30 @@ mod tests {
     }
 }
 
+/// An in-progress in-app Claude OAuth login (authorization-code + PKCE), held
+/// between `claude_login_start` and `claude_login_finish`. The PKCE `verifier`
+/// and `state` stay here so they never round-trip through the UI.
+#[derive(Clone)]
+pub struct PendingClaudeLogin {
+    pub verifier: String,
+    pub state: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl PendingClaudeLogin {
+    pub fn is_valid(&self, now: DateTime<Utc>) -> bool {
+        now < self.expires_at
+    }
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub snapshot: Option<UsageSnapshot>,
     pub settings: Settings,
     /// In-flight Copilot device-flow authorization, if any.
     pub pending_copilot_device: Option<PendingDevice>,
+    /// In-flight in-app Claude OAuth login, if any.
+    pub pending_claude_login: Option<PendingClaudeLogin>,
     /// Last *successful* live Claude meters. The `/usage` endpoint rate-limits
     /// aggressively when polled, so a failed refresh reuses this instead of
     /// swapping in the local estimate — which is on a different scale and would
@@ -67,6 +85,10 @@ pub struct AppState {
     /// throttle it well below the log-scan cadence (see `LIVE_CLAUDE_MIN_SECS`),
     /// since session/weekly windows move slowly and the endpoint throttles hard.
     pub live_claude_attempted_at: Option<DateTime<Utc>>,
+    /// When an automatic token *refresh* was last attempted. The token endpoint
+    /// rate-limits hard, so a dead/expired refresh token isn't retried more than
+    /// once per `LIVE_CLAUDE_REFRESH_MIN_SECS` while the window stays open.
+    pub live_claude_refresh_attempted_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -80,14 +102,21 @@ pub struct CollectLock(pub tokio::sync::Mutex<()>);
 /// log-scan refresh interval.
 pub const LIVE_CLAUDE_MIN_SECS: i64 = 120;
 
+/// Minimum seconds between automatic token-refresh attempts, so an expired or
+/// revoked refresh token can't be hammered against the rate-limited token
+/// endpoint on every visible refresh tick.
+pub const LIVE_CLAUDE_REFRESH_MIN_SECS: i64 = 60;
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
             snapshot: None,
             settings,
             pending_copilot_device: None,
+            pending_claude_login: None,
             live_claude_buckets: None,
             live_claude_attempted_at: None,
+            live_claude_refresh_attempted_at: None,
         }
     }
 }

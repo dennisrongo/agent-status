@@ -115,4 +115,12 @@ pub struct Detection {
     pub claude: bool,
     pub glm: bool,
     pub copilot: bool,
+    /// Whether a Claude Code OAuth login is actually present on this machine
+    /// (distinct from `claude`, which is also true when only the CLI is on PATH).
+    /// Drives the connected/disconnected control, independent of the live toggle.
+    pub claude_signed_in: bool,
+    /// Whether that login is present but past its expiry — lets Settings show a
+    /// "reconnect" affordance instead of a misleading "connected" one. Computed
+    /// after any in-place auto-refresh, so a freshly-refreshed token reads false.
+    pub claude_expired: bool,
 }

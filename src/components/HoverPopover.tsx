@@ -105,15 +105,15 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
   return (
     <>
       <Head src={source} />
-      {limits.needsReauth ? (
+      {limits.needsReauth && (
         <div className="hp-status warn">
-          Claude login expired — open the app to reconnect.
+          Claude login expired — reconnect in the app.
         </div>
-      ) : limits.buckets.length === 0 ? (
-        <div className="hp-status">
-          {limits.pending ? "Reading live Claude usage…" : "No usage data yet."}
-        </div>
-      ) : (
+      )}
+      {limits.signedOut && (
+        <div className="hp-status">Connect Claude in the app to see live usage.</div>
+      )}
+      {limits.buckets.length > 0 ? (
         <div className="hp-rows">
           {limits.buckets.slice(0, 3).map((b) => (
             <MeterRow
@@ -125,6 +125,13 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
             />
           ))}
         </div>
+      ) : (
+        !limits.needsReauth &&
+        !limits.signedOut && (
+          <div className="hp-status">
+            {limits.pending ? "Reading live Claude usage…" : "No usage data yet."}
+          </div>
+        )
       )}
     </>
   );

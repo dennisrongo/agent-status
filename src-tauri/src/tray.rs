@@ -181,10 +181,33 @@ fn place_window(window: &WebviewWindow, icon_x: f64, icon_y: f64, icon_w: f64, i
 /// physical pixels, so the math needs no scale conversion.
 #[cfg(target_os = "windows")]
 fn place_window(window: &WebviewWindow, icon_x: f64, icon_y: f64, _icon_w: f64, _icon_h: f64) {
-    let Some(monitor) = icon_monitor(window, icon_x, icon_y) else {
+    // Pick the monitor the icon sits on, then fall back to the window's current
+    // monitor and finally the primary. The icon rect is unreliable when the icon
+    // lives in the hidden-icons overflow flyout, so this fallback chain keeps the
+    // window pinned to a real work-area corner instead of dropping to the
+    // positioner plugin's `TrayCenter` (which lands mid-screen and then visibly
+    // jumps once the frontend's `fit_tray_window` re-pins it — the reported
+    // "shifts from left to right" on open).
+    let monitor = icon_monitor(window, icon_x, icon_y)
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
         let _ = window.move_window_constrained(Position::TrayCenter);
         return;
     };
+    pin_bottom_right(window, &monitor);
+}
+
+/// Pin a window flush to the bottom-right corner of a monitor's work area (above
+/// the Windows taskbar, against the right edge). Shared by the tray open
+/// placement and `commands::usage::fit_tray_window`'s post-resize re-pin so BOTH
+/// derive the exact same pixel from the window's real `outer_size`. Previously
+/// the two paths used different inputs (`outer_size` here vs `width * scale`
+/// there) and different monitor sources, so the window was placed at one spot
+/// before `show()` and then jumped to a slightly different spot when the frontend
+/// re-fit it — visible as the window sliding into place on open.
+#[cfg(target_os = "windows")]
+pub(crate) fn pin_bottom_right(window: &WebviewWindow, monitor: &tauri::Monitor) {
     let wa = monitor.work_area();
     let outer = window.outer_size().unwrap_or_default();
     let x = wa.position.x + wa.size.width as i32 - outer.width as i32;

@@ -37,6 +37,10 @@ export interface Limits {
   /** Live mode is on but no Claude Code login is present — bars are a local
    * estimate. Show a "not signed in" hint instead of silently relabeling. */
   signedOut?: boolean;
+  /** When needsReauth, whether a refresh token is still on hand — i.e. a
+   * one-click in-place reconnect can be tried before the full browser sign-in.
+   * False ⇒ go straight to the OAuth login. */
+  canRefresh?: boolean;
 }
 
 export interface Kpi {
@@ -116,6 +120,12 @@ export interface Detection {
   claude: boolean;
   glm: boolean;
   copilot: boolean;
+  /** A Claude Code OAuth login is present on this machine (independent of the
+   * live toggle). Drives the connect/disconnect control. */
+  claudeSignedIn: boolean;
+  /** That login is present but past its expiry (after any auto-refresh) — Settings
+   * shows a reconnect affordance instead of a misleading "connected" one. */
+  claudeExpired: boolean;
 }
 
 export interface UsageSnapshot {
@@ -135,6 +145,10 @@ export interface CopilotDeviceCode {
   userCode: string;
   verificationUri: string;
   interval: number;
+}
+
+export interface ClaudeLoginInfo {
+  authorizeUrl: string;
 }
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";

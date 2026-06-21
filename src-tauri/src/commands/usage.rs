@@ -22,6 +22,15 @@ pub struct CopilotDeviceCode {
     pub interval: u64,
 }
 
+/// What the UI shows when an in-app Claude OAuth login starts: the authorize URL
+/// (already opened in the browser, repeated here so the UI can offer a manual
+/// "open again" link). The PKCE verifier + state stay server-side in `AppState`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeLoginInfo {
+    pub authorize_url: String,
+}
+
 /// Scan local logs AND fetch live vendor usage, merge into one snapshot, and
 /// cache it in state. Shared by the `get_usage` command and the background
 /// refresh timer.
@@ -35,7 +44,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     let _serialized = collect_lock.0.lock().await;
 
     let now = chrono::Utc::now();
-    let (plan, glm_endpoint, zai_key, anthropic_key, copilot_token, live_claude, cached_live, live_due) = {
+    let (plan, glm_endpoint, zai_key, anthropic_key, copilot_token, live_claude, cached_live, mut live_due, refresh_due) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
         // Only hit the rate-limited /usage endpoint once per LIVE_CLAUDE_MIN_SECS,
@@ -43,6 +52,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // the cached live meters.
         let live_due = guard.live_claude_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::LIVE_CLAUDE_MIN_SECS
+        });
+        // Independently throttle automatic token refreshes so a dead refresh
+        // token can't be retried against the rate-limited token endpoint on every
+        // tick while the window stays open.
+        let refresh_due = guard.live_claude_refresh_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::LIVE_CLAUDE_REFRESH_MIN_SECS
         });
         (
             guard.settings.plan.clone(),
@@ -53,6 +68,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             guard.settings.live_claude,
             guard.live_claude_buckets.clone(),
             live_due,
+            refresh_due,
         )
     };
 
@@ -67,15 +83,63 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     const LIVE_NOTE: &str = "Live from Claude — the same session / weekly utilization your /usage shows, read from your Claude Code login.";
     let mut fresh_live: Option<Vec<crate::scanner::Bucket>> = None;
     let mut live_attempted = false;
+    let mut refresh_attempted = false;
+    // Token presence/expiry, read once: the live block uses it, and so do
+    // detection + the connect/reconnect controls (which must reflect the login
+    // state regardless of the live toggle). Re-read after a successful auto-
+    // refresh below so detection reports the post-refresh (fresh) state.
+    let mut claude_ts = claude::token_status(now);
+    let mut refreshed = false;
     if live_claude {
-        if live_due {
+        // Detect a dead login up front, by the token's own clock, before any
+        // network call. This is what stops us from serving the last cached
+        // reading as "live" for up to the throttle window after the token has
+        // already expired (the reported "stale data"). If a refresh token is on
+        // hand we renew in place automatically; otherwise we surface a reconnect
+        // prompt — and once the login is known-dead we never present the cached
+        // meters again.
+        let ts = &claude_ts;
+        let mut force_reauth: Option<String> = None;
+        if ts.present && ts.expired {
+            if ts.has_refresh && refresh_due {
+                refresh_attempted = true;
+                match claude::refresh(now).await {
+                    // Renewed in place — fetch fresh data with the new token now,
+                    // bypassing the usage throttle this once.
+                    Ok(()) => {
+                        live_due = true;
+                        refreshed = true;
+                    }
+                    Err(e) => force_reauth = Some(e),
+                }
+            } else if ts.has_refresh {
+                // Refreshed too recently to retry the rate-limited token endpoint.
+                force_reauth = Some("Claude login expired — reconnecting shortly…".to_string());
+            } else {
+                force_reauth =
+                    Some("Claude login expired — sign in again to restore live usage.".to_string());
+            }
+        }
+
+        if let Some(reason) = force_reauth {
+            // Known-dead by the clock (and any auto-refresh failed). Surface a
+            // reconnect prompt and DON'T serve the cached live meters — they'd be
+            // stale. The scanner's local estimate stays in `buckets`, but the UI
+            // hides it behind the reconnect card while `needs_reauth` is set.
+            snapshot.limits.needs_reauth = true;
+            snapshot.limits.can_refresh = ts.has_refresh;
+            snapshot.limits.estimate_note = reason;
+        } else if live_due {
             live_attempted = true;
             let live = claude::fetch(now).await;
-            // A present-but-rejected (401) token means the Claude Code login
-            // expired — surface a re-auth prompt no matter which display path
-            // we take below (blank, last-good cache, or pending).
-            snapshot.limits.needs_reauth = live.expired;
-            if live.ok && !live.buckets.is_empty() {
+            if live.expired {
+                // The clock looked valid but the server rejected the token (401):
+                // revoked elsewhere. Prompt a reconnect; don't show stale cache.
+                snapshot.limits.needs_reauth = true;
+                snapshot.limits.can_refresh = ts.has_refresh;
+                snapshot.limits.estimate_note =
+                    "Claude login expired — reconnect to restore live usage.".to_string();
+            } else if live.ok && !live.buckets.is_empty() {
                 snapshot.limits.buckets = live.buckets.clone();
                 snapshot.limits.plan_label = "live".to_string();
                 snapshot.limits.estimate_note = LIVE_NOTE.to_string();
@@ -83,9 +147,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 fresh_live = Some(live.buckets);
             } else if let Some(cached) = cached_live {
                 // Live refresh failed (the /usage endpoint rate-limits hard when
-                // polled). Reuse the last good live reading rather than swapping
-                // in the local estimate — otherwise the meters flip between two
-                // scales.
+                // polled), but the token is NOT expired — reuse the last good live
+                // reading rather than swapping in the local estimate, which is on
+                // a different scale and would make the meters flip-flop.
                 snapshot.limits.buckets = cached;
                 snapshot.limits.plan_label = "live".to_string();
                 snapshot.limits.live = true;
@@ -112,13 +176,13 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 }
             }
         } else if let Some(cached) = cached_live {
-            // Within the throttle window — serve the cached live meters instead
-            // of re-hitting the rate-limited endpoint.
+            // Within the throttle window and the token is clock-valid — serve the
+            // cached live meters instead of re-hitting the rate-limited endpoint.
             snapshot.limits.buckets = cached;
             snapshot.limits.plan_label = "live".to_string();
             snapshot.limits.live = true;
             snapshot.limits.estimate_note = LIVE_NOTE.to_string();
-        } else if claude::read_token().is_some() {
+        } else if ts.present {
             // Throttled before the first reading, but a login exists → live data
             // is still coming. Show pending rather than the estimate.
             snapshot.limits.pending = true;
@@ -127,6 +191,13 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             // Throttled, no cached reading, and no login → local estimate.
             snapshot.limits.signed_out = true;
         }
+    }
+
+    // A successful auto-refresh above rewrote the credential, so the token status
+    // read at the top is now stale — re-read it so detection reports the fresh
+    // (not-expired) state instead of flagging a just-renewed login as expired.
+    if refreshed {
+        claude_ts = claude::token_status(now);
     }
 
     // Live vendor fetches (network, async).
@@ -140,9 +211,11 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // present once a token is found locally or connected in-app — `configured`
     // captures both without a second token read.
     snapshot.detection = Some(Detection {
-        claude: claude::detected() || snapshot.meta.files_scanned > 0,
+        claude: claude_ts.present || claude::cli_on_path() || snapshot.meta.files_scanned > 0,
         glm: glm_status.configured,
         copilot: copilot_status.configured,
+        claude_signed_in: claude_ts.present,
+        claude_expired: claude_ts.expired,
     });
 
     snapshot.vendor = Some(VendorReport {
@@ -160,6 +233,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if live_attempted {
             guard.live_claude_attempted_at = Some(now);
+        }
+        if refresh_attempted {
+            guard.live_claude_refresh_attempted_at = Some(now);
         }
     }
 
@@ -206,20 +282,94 @@ pub async fn get_usage(app: AppHandle) -> Result<UsageSnapshot, String> {
     Ok(snapshot)
 }
 
-/// Refresh an expired Claude Code login token in place, then re-collect so the
-/// live meters come back immediately. Returns the refreshed snapshot.
+/// Begin an in-app Claude OAuth login (authorization-code + PKCE, manual
+/// copy-paste). Mints a fresh PKCE verifier + state, opens the authorize page in
+/// the browser, and returns the URL so the UI can re-open it. The user pastes the
+/// resulting `CODE#STATE` into `claude_login_finish`.
 #[tauri::command]
-pub async fn reconnect_claude(app: AppHandle) -> Result<UsageSnapshot, String> {
-    claude::refresh(chrono::Utc::now()).await?;
-    // Clear the live-fetch throttle and stale cache so the very next collect
-    // re-hits the usage endpoint with the freshly-minted token instead of
-    // serving the cached "pending" state.
+pub fn claude_login_start(app: AppHandle) -> Result<ClaudeLoginInfo, String> {
+    let auth = claude::build_authorize();
     {
         let state = app.state::<Mutex<AppState>>();
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.live_claude_attempted_at = None;
-        guard.live_claude_buckets = None;
+        guard.pending_claude_login = Some(crate::state::PendingClaudeLogin {
+            verifier: auth.verifier,
+            state: auth.state,
+            // The authorize code is short-lived; bound the pending login to ~10
+            // minutes so a stale verifier can't be reused much later.
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        });
     }
+    // Best-effort browser open; the UI also shows the link to open manually.
+    let _ = open_url(auth.url.clone());
+    Ok(ClaudeLoginInfo { authorize_url: auth.url })
+}
+
+/// Finish an in-app Claude OAuth login: exchange the pasted `CODE#STATE` for
+/// tokens, write them to Claude Code's credential store, and re-collect so live
+/// usage comes back. Returns the refreshed snapshot.
+#[tauri::command]
+pub async fn claude_login_finish(app: AppHandle, code: String) -> Result<UsageSnapshot, String> {
+    let pending = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.pending_claude_login.clone()
+    };
+    let Some(pending) = pending else {
+        return Err("No Claude sign-in is in progress — start it again.".to_string());
+    };
+    if !pending.is_valid(chrono::Utc::now()) {
+        clear_pending_claude_login(&app)?;
+        return Err("The sign-in timed out — start it again.".to_string());
+    }
+
+    claude::exchange_code(chrono::Utc::now(), &code, &pending.verifier, &pending.state).await?;
+
+    clear_pending_claude_login(&app)?;
+    clear_claude_throttle(&app)?;
+    let snapshot = collect(&app).await?;
+    let _ = app.emit("usage-updated", &snapshot);
+    Ok(snapshot)
+}
+
+/// Abandon an in-progress in-app Claude login, forgetting the PKCE secrets.
+#[tauri::command]
+pub fn claude_login_cancel(app: AppHandle) -> Result<(), String> {
+    clear_pending_claude_login(&app)
+}
+
+fn clear_pending_claude_login(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.pending_claude_login = None;
+    Ok(())
+}
+
+/// Clear the live-fetch + refresh throttles and the stale cache so the very next
+/// collect re-hits the usage endpoint with a freshly-minted token instead of
+/// serving a cached/pending state.
+fn clear_claude_throttle(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.live_claude_attempted_at = None;
+    guard.live_claude_refresh_attempted_at = None;
+    guard.live_claude_buckets = None;
+    Ok(())
+}
+
+/// Full Claude sign-out: delete the SHARED Claude Code credential (keychain +
+/// file), forget any in-flight login, clear the live throttle/cache, and
+/// re-collect. Because the credential is shared, this signs the `claude` CLI out
+/// too — the user signs in again (here or via `claude /login`) to use either.
+/// Returns the refreshed snapshot (now the local-estimate / signed-out state).
+#[tauri::command]
+pub async fn claude_sign_out(app: AppHandle) -> Result<UsageSnapshot, String> {
+    // Credential removal does keychain/file I/O — run it off the async runtime.
+    tokio::task::spawn_blocking(claude::clear_credentials)
+        .await
+        .map_err(|e| e.to_string())??;
+    clear_pending_claude_login(&app)?;
+    clear_claude_throttle(&app)?;
     let snapshot = collect(&app).await?;
     let _ = app.emit("usage-updated", &snapshot);
     Ok(snapshot)
@@ -254,6 +404,27 @@ pub fn set_live_claude(
     Ok((&updated).into())
 }
 
+/// Apply (or deliberately skip) the OS launch-at-login registration.
+///
+/// No-op in dev builds: `tauri dev` runs the binary straight out of
+/// `target/debug`, so registering autostart there would write a login item
+/// pointing at that throwaway path — at the next login the OS would try to
+/// launch a stale/dev binary, and on macOS every dev run would re-fire the
+/// "added to Login Items / can run in the background" notification. Only
+/// bundled/`tauri build` builds (where `is_dev()` is false) touch the OS; the
+/// stored setting is untouched here, so the UI still reflects the user's choice.
+pub fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if tauri::is_dev() {
+        return Ok(());
+    }
+    let autostart = app.autolaunch();
+    if enabled {
+        autostart.enable().map_err(|e| e.to_string())
+    } else {
+        autostart.disable().map_err(|e| e.to_string())
+    }
+}
+
 /// Toggle launch-at-login. Registers/unregisters the OS launch agent, then
 /// persists the choice. The registration is applied before saving so a failure
 /// to update the OS leaves the stored setting untouched.
@@ -263,12 +434,7 @@ pub fn set_launch_on_startup(
     state: State<'_, Mutex<AppState>>,
     enabled: bool,
 ) -> Result<SettingsView, String> {
-    let autostart = app.autolaunch();
-    if enabled {
-        autostart.enable().map_err(|e| e.to_string())?;
-    } else {
-        autostart.disable().map_err(|e| e.to_string())?;
-    }
+    apply_autostart(&app, enabled)?;
     let updated = update_settings(&state, |s| s.launch_on_startup = enabled)?;
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())
@@ -379,14 +545,34 @@ pub fn fit_tray_window(app: AppHandle, label: String, width: f64, height: f64) {
     let Some(win) = app.get_webview_window(&label) else {
         return;
     };
-    let _ = win.set_size(tauri::LogicalSize::new(width, height));
+    // The frontend re-asserts the size on every open (when a fresh snapshot
+    // lands), so most calls request a size the window already has. Re-running
+    // set_size + re-pin in that case is exactly what made the window twitch on
+    // open, so skip when the size is unchanged. inner_size() is what set_size
+    // sets, so compare against it.
     #[cfg(target_os = "windows")]
-    if let Some(mon) = win.current_monitor().ok().flatten() {
-        let wa = mon.work_area();
-        let scale = mon.scale_factor();
-        let x = wa.position.x + wa.size.width as i32 - (width * scale).round() as i32;
-        let y = wa.position.y + wa.size.height as i32 - (height * scale).round() as i32;
-        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    {
+        let scale = win.scale_factor().unwrap_or(1.0).max(0.01);
+        let target_w = (width * scale).round() as u32;
+        let target_h = (height * scale).round() as u32;
+        let cur = win.inner_size().unwrap_or_default();
+        if cur.width.abs_diff(target_w) <= 2 && cur.height.abs_diff(target_h) <= 2 {
+            return;
+        }
+    }
+    let _ = win.set_size(tauri::LogicalSize::new(width, height));
+    // Re-pin through the SAME helper the tray open path uses, so a genuine resize
+    // keeps the bottom-right corner exactly where it was placed (no horizontal
+    // drift). current_monitor reflects the display the window is on after the
+    // open placement; fall back to primary if it can't be read mid-resize.
+    #[cfg(target_os = "windows")]
+    if let Some(mon) = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten())
+    {
+        crate::tray::pin_bottom_right(&win, &mon);
     }
 }
 

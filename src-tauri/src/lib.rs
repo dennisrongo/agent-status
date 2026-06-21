@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager};
-use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
+use tauri_plugin_autostart::MacosLauncher;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
@@ -56,15 +56,11 @@ pub fn run() {
             tray::build(&handle)?;
 
             // Sync the OS launch-at-login registration with the saved setting
-            // (defaults on — menubar widgets are expected to persist). Keeps the
-            // registration honest after the user toggles it off in Settings.
-            let autostart = app.autolaunch();
-            let synced = if launch_on_startup {
-                autostart.enable()
-            } else {
-                autostart.disable()
-            };
-            if let Err(e) = synced {
+            // (defaults on — menubar widgets are expected to persist). No-op in
+            // dev builds so `tauri dev`'s target/debug binary is never written as
+            // a login item. Keeps the registration honest after the user toggles
+            // it off in Settings.
+            if let Err(e) = commands::usage::apply_autostart(&handle, launch_on_startup) {
                 tracing::warn!("failed to sync launch-at-login: {e}");
             }
 
@@ -104,7 +100,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_usage,
-            commands::reconnect_claude,
+            commands::claude_login_start,
+            commands::claude_login_finish,
+            commands::claude_login_cancel,
+            commands::claude_sign_out,
             commands::get_settings,
             commands::set_plan,
             commands::set_live_claude,

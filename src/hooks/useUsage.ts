@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { isTauriReady } from "../tauriReady";
 import type {
+  ClaudeLoginInfo,
   CopilotDeviceCode,
   PlanKey,
   SettingsView,
@@ -19,7 +20,6 @@ type Provider = "glm" | "anthropic";
  */
 export function useUsage() {
   const usageCmd = useTauriCommand<UsageSnapshot>("get_usage");
-  const reconnectCmd = useTauriCommand<UsageSnapshot>("reconnect_claude");
   const settingsCmd = useTauriCommand<SettingsView>("get_settings");
   const planCmd = useTauriCommand<SettingsView>("set_plan");
   const refreshSecsCmd = useTauriCommand<SettingsView>("set_refresh_secs");
@@ -34,6 +34,10 @@ export function useUsage() {
   const copilotPollCmd = useTauriCommand<string>("copilot_device_poll");
   const copilotCancelCmd = useTauriCommand<void>("copilot_device_cancel");
   const disconnectCopilotCmd = useTauriCommand<SettingsView>("disconnect_copilot");
+  const claudeLoginStartCmd = useTauriCommand<ClaudeLoginInfo>("claude_login_start");
+  const claudeLoginFinishCmd = useTauriCommand<UsageSnapshot>("claude_login_finish");
+  const claudeLoginCancelCmd = useTauriCommand<void>("claude_login_cancel");
+  const claudeSignOutCmd = useTauriCommand<UsageSnapshot>("claude_sign_out");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -55,12 +59,33 @@ export function useUsage() {
     if (data) applySnapshot(data);
   }, [usageCmd, applySnapshot]);
 
-  // Refresh the expired Claude Code login token in place and re-pull usage.
-  const reconnectClaude = useCallback(async () => {
-    const data = await reconnectCmd.execute();
+  // Full in-app Claude OAuth login (copy-paste). `start` opens the browser and
+  // returns the authorize URL; `finish` exchanges the pasted CODE#STATE and
+  // returns the refreshed snapshot; `cancel` drops the pending PKCE secrets.
+  const claudeLoginStart = useCallback(
+    () => claudeLoginStartCmd.execute(),
+    [claudeLoginStartCmd],
+  );
+  const claudeLoginFinish = useCallback(
+    async (code: string) => {
+      const data = await claudeLoginFinishCmd.execute({ code });
+      if (data) applySnapshot(data);
+      return data;
+    },
+    [claudeLoginFinishCmd, applySnapshot],
+  );
+  const claudeLoginCancel = useCallback(() => {
+    void claudeLoginCancelCmd.execute();
+  }, [claudeLoginCancelCmd]);
+
+  // Full sign-out: deletes the shared Claude Code credential (logs the CLI out
+  // too) and re-pulls usage so the UI drops to the signed-out / estimate state.
+  // Returns the snapshot (null on failure) so the caller can show an error.
+  const claudeSignOut = useCallback(async () => {
+    const data = await claudeSignOutCmd.execute();
     if (data) applySnapshot(data);
     return data;
-  }, [reconnectCmd, applySnapshot]);
+  }, [claudeSignOutCmd, applySnapshot]);
 
   const setPlan = useCallback(
     async (plan: PlanKey) => {
@@ -215,9 +240,13 @@ export function useUsage() {
     copilotCancel,
     disconnectCopilot,
     refresh,
-    reconnectClaude,
-    reconnecting: reconnectCmd.isLoading,
-    reconnectError: reconnectCmd.error,
+    claudeLoginStart,
+    claudeLoginFinish,
+    claudeLoginCancel,
+    claudeLoginBusy: claudeLoginStartCmd.isLoading || claudeLoginFinishCmd.isLoading,
+    claudeLoginError: claudeLoginFinishCmd.error ?? claudeLoginStartCmd.error,
+    claudeSignOut,
+    claudeSignOutError: claudeSignOutCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,
