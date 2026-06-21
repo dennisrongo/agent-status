@@ -227,7 +227,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     }
 
     // Live vendor fetches (network, async).
-    let glm_status = fetch_glm(zai_key, &glm_endpoint).await;
+    let glm_status = fetch_glm(zai_key, &glm_endpoint, now).await;
     let anthropic_status = fetch_anthropic(anthropic_key).await;
     let (copilot_status, copilot_fresh_good, copilot_terminal, copilot_attempted) =
         resolve_copilot(copilot_token, copilot_cached, copilot_prev, copilot_due).await;
@@ -291,11 +291,15 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     Ok(snapshot)
 }
 
-async fn fetch_glm(key: Option<EncryptedSecret>, endpoint: &str) -> VendorStatus {
+async fn fetch_glm(
+    key: Option<EncryptedSecret>,
+    endpoint: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> VendorStatus {
     match key {
         None => VendorStatus::not_configured(),
         Some(secret) => match encryption::decrypt(&secret) {
-            Ok(api_key) => glm::fetch(&api_key, endpoint).await,
+            Ok(api_key) => glm::fetch(&api_key, endpoint, now).await,
             Err(e) => VendorStatus::failed(format!("key decrypt: {e}")),
         },
     }
