@@ -17,7 +17,28 @@ Do **not** trigger for a local dev build (`npm run tauri dev`, `cargo build`) �
 
 ## Workflow
 
-1. **Determine the new version.** Ask if unspecified; otherwise infer patch/minor/major from the request. It MUST be strictly greater than the current `tauri.conf.json` version — the auto-updater only fires on a newer version, so never re-publish an existing one.
+1. **Determine the new version — automatically, from the commits since the last release.** If the user named an explicit version or bump level (e.g. "ship 0.2.0", "cut a minor"), honor it. Otherwise classify the Conventional-Commit subjects in the `PREV_TAG..HEAD` range (the same range the release notes use) and pick the bump. The rule is **version-aware** because the app is pre-1.0:
+   - **minor** (`0.1.2 → 0.2.0`) — any `feat:` / `feat(scope):` commit, **or** any breaking change while still pre-1.0 (`major == 0`). Pre-1.0, a breaking change does **not** auto-jump to `1.0.0` — that's a deliberate call you make by asking explicitly.
+   - **patch** (`0.1.2 → 0.1.3`) — only fixes/chores and no feature (`fix:`, `chore:`, `docs:`, `refactor:`, `perf:`, …).
+   - **major** (`0.9.0 → 1.0.0`) — a breaking change (`!` before the colon, e.g. `feat!:`, or a `BREAKING CHANGE` footer) **only once already at `1.x`+**. Pre-1.0 these stay minor per the rule above.
+
+   Compute and **announce** it (never silently bump) — print the choice and the commits that drove it:
+   ```bash
+   git fetch --tags --quiet
+   PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+   RANGE="${PREV_TAG:+$PREV_TAG..}HEAD"
+   CUR=$(node -p "require('./src-tauri/tauri.conf.json').version"); MAJOR=${CUR%%.*}
+   breaking() { git log $RANGE --no-merges --pretty=format:'%s'  | grep -qE '^[a-z]+(\([^)]*\))?!:' \
+             || git log $RANGE --no-merges --pretty=format:'%B' | grep -q  'BREAKING CHANGE'; }
+   feature()  { git log $RANGE --no-merges --pretty=format:'%s'  | grep -qE '^feat(\([^)]*\))?:'; }
+   if   [[ $MAJOR -ge 1 ]] && breaking; then BUMP=major          # only after 1.0.0
+   elif feature || breaking;            then BUMP=minor          # pre-1.0: breaking caps at minor
+   else                                      BUMP=patch
+   fi
+   echo "Recommended: $BUMP bump  (current $CUR; commits since ${PREV_TAG:-<none>})"
+   git log $RANGE --no-merges --pretty=format:'  %s'
+   ```
+   State the resulting version and the `feat:`/breaking commit(s) behind a minor (or major), then proceed. The new version MUST be strictly greater than the current `tauri.conf.json` version — the auto-updater only fires on a newer one, so never re-publish an existing version. If there are no commits since the last tag, there is nothing to release — stop and say so.
 2. **Bump the version in all five files, kept identical:**
    - `package.json` (`"version"`)
    - `package-lock.json` (both the top-level `"version"` and `packages.""` `"version"`)
@@ -52,15 +73,15 @@ See `docs/RELEASE.md` for the full runbook and `scripts/release-mac.sh` for the 
 **User:** "ship a 0.1.2 release"
 
 **Claude:**
-- Bumps all four files to 0.1.2, `npm run build`, commit + push.
+- Bumps all five files to 0.1.2, `npm run build`, commit + push.
 - Runs `./scripts/release-mac.sh --publish`, then curls the endpoint and confirms `0.1.2` with both arch keys at HTTP 200.
 - Reports the release URL and that installed `0.1.x` will show the update banner on next launch.
 
-### Example 2: Unspecified bump
+### Example 2: Unspecified bump (auto-decided)
 
 **User:** "cut a new release"
 
-**Claude:** Asks which bump (patch/minor/major) given the current version, then proceeds through the workflow.
+**Claude:** Inspects the commits since the last tag (`v0.4.0`). Finds a `feat(ui): add per-session history sparkline` (and even a `BREAKING CHANGE` footer would stay minor pre-1.0), so picks a **minor** bump and announces: *"0.5.0 — minor, driven by `feat(ui): add per-session history sparkline`"*, then proceeds through the workflow. Had the range held only `fix:`/`chore:` commits, it would pick a patch bump (`0.4.0 → 0.4.1`) instead — no question asked unless the user wants to override.
 
 ## Anti-patterns
 
