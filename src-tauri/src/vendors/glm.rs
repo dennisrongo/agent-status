@@ -78,7 +78,11 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
         return shape_error("no `data.limits` array in response");
     };
 
-    let mut detail = Vec::new();
+    // Each entry carries a sort rank so the windows render in a fixed order
+    // (Session, Weekly, Monthly tools, …) regardless of the order z.ai lists
+    // them — the short coding window then always sits left of the monthly tool
+    // quota, matching Claude's Session-first overview.
+    let mut detail: Vec<(u8, KeyVal)> = Vec::new();
     let mut five_h: Option<f64> = None;
     let mut weekly: Option<f64> = None;
     let mut monthly: Option<f64> = None;
@@ -128,7 +132,9 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
             || (tl.contains("token") && !is_week && !is_month);
 
         let label: String = if is_5h {
-            "5-hour".to_string()
+            // "Session" mirrors Claude's first bucket; the underlying window is
+            // still the rolling 5-hour coding quota.
+            "Session".to_string()
         } else if is_week {
             "Weekly".to_string()
         } else if is_month {
@@ -141,7 +147,7 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
             humanize(typ)
         };
 
-        // Faint right-aligned slot, parallel to Claude's "resets 4h 12m". z.ai
+        // Faint right-aligned slot, parallel to Claude's "resets in 4h 12m". z.ai
         // sends `nextResetTime` as a Unix epoch in MILLISECONDS on every window
         // (including the 5-hour one), so render it as a live-style countdown. A
         // string timestamp (older/synthetic shape) is trimmed to its date unless
@@ -163,11 +169,20 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
 
         let Some(p) = pct else { continue };
         let value = match (&reset, used, total) {
-            (Some(r), _, _) => format!("resets {r}"),
+            (Some(r), _, _) => format!("resets in {r}"),
             (None, Some(u), Some(t)) => format!("{} / {}", fmt_count(u), fmt_count(t)),
             _ => String::new(),
         };
-        detail.push(KeyVal::meter(&label, value, p));
+        let rank: u8 = if is_5h {
+            0
+        } else if is_week {
+            1
+        } else if is_month {
+            2
+        } else {
+            3
+        };
+        detail.push((rank, KeyVal::meter(&label, value, p)));
         if is_5h {
             five_h = Some(p);
         } else if is_week {
@@ -181,12 +196,17 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
         return shape_error("no recognized quota limits in response");
     }
 
+    // Stable sort keeps API order within a rank while pinning Session ahead of
+    // Weekly ahead of Monthly tools.
+    detail.sort_by_key(|(rank, _)| *rank);
+    let detail: Vec<KeyVal> = detail.into_iter().map(|(_, kv)| kv).collect();
+
     // Headline: weekly usage if present, else the 5-hour window, else the
     // monthly tool quota.
     let (used, label) = if let Some(w) = weekly {
         (w, "weekly quota used")
     } else if let Some(f) = five_h {
-        (f, "5-hour quota used")
+        (f, "session quota used")
     } else if let Some(m) = monthly {
         (m, "monthly quota used")
     } else {
@@ -318,7 +338,7 @@ mod tests {
         ] } });
         let s = parse(&v, now());
         assert!(s.ok);
-        assert_eq!(s.secondary, "5-hour quota used");
+        assert_eq!(s.secondary, "session quota used");
     }
 
     #[test]
@@ -347,9 +367,13 @@ mod tests {
         assert!(s.ok);
         let labels: Vec<_> = s.detail.iter().map(|d| d.label.as_str()).collect();
         assert!(labels.contains(&"Monthly tools"), "got {labels:?}");
-        assert!(labels.contains(&"5-hour"), "got {labels:?}");
-        // 5-hour is the coding throttle → it drives the headline.
-        assert_eq!(s.secondary, "5-hour quota used");
+        assert!(labels.contains(&"Session"), "got {labels:?}");
+        // Even though the API lists TIME_LIMIT (monthly) first, the Session
+        // window is pinned ahead of it so it renders to the left.
+        assert_eq!(s.detail[0].label, "Session", "got {labels:?}");
+        assert_eq!(s.detail[1].label, "Monthly tools", "got {labels:?}");
+        // The session window is the coding throttle → it drives the headline.
+        assert_eq!(s.secondary, "session quota used");
     }
 
     #[test]
@@ -392,7 +416,7 @@ mod tests {
         ] } });
         let s = parse(&v, now());
         let m = s.detail.iter().find(|d| d.label == "Monthly tools").unwrap();
-        assert_eq!(m.value, "resets 2026-06-24");
+        assert_eq!(m.value, "resets in 2026-06-24");
     }
 
     #[test]
@@ -412,13 +436,13 @@ mod tests {
         assert!(s.ok);
         // Both TOKENS_LIMIT rows are disambiguated by (unit, number) — the weekly
         // one is NOT collapsed into a second "5-hour".
-        let five = s.detail.iter().find(|d| d.label == "5-hour").expect("5-hour row");
+        let five = s.detail.iter().find(|d| d.label == "Session").expect("session row");
         let week = s.detail.iter().find(|d| d.label == "Weekly").expect("weekly row");
         let month = s.detail.iter().find(|d| d.label == "Monthly tools").expect("monthly row");
         // The 5-hour window now shows a live countdown, not a date or nothing.
-        assert_eq!(five.value, "resets 2h 15m");
-        assert_eq!(week.value, "resets 3d 0h");
-        assert_eq!(month.value, "resets 40d 0h");
+        assert_eq!(five.value, "resets in 2h 15m");
+        assert_eq!(week.value, "resets in 3d 0h");
+        assert_eq!(month.value, "resets in 40d 0h");
         assert_eq!(five.pct, Some(16.0));
         // Weekly present → it drives the headline.
         assert_eq!(s.secondary, "weekly quota used");
@@ -431,7 +455,7 @@ mod tests {
               "nextResetTime": reset_in(90).to_string() }
         ] } });
         let s = parse(&v, now());
-        assert_eq!(s.detail[0].value, "resets 1h 30m");
+        assert_eq!(s.detail[0].value, "resets in 1h 30m");
     }
 
     #[test]
@@ -442,7 +466,7 @@ mod tests {
             { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 20, "nextResetTime": ms }
         ] } });
         let s = parse(&v, now());
-        assert_eq!(s.detail[0].value, "resets 45m");
+        assert_eq!(s.detail[0].value, "resets in 45m");
     }
 
     #[test]
