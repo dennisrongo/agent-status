@@ -134,7 +134,10 @@ To ship an update:
    `updater/latest.json` (via `scripts/merge-manifest.mjs`), **generates release
    notes from the commit log** since the previous tag, then creates the GitHub
    release `vX.Y.Z` (or refreshes notes + re-uploads if it exists) and verifies the
-   public endpoint returns HTTP 200.
+   public endpoint returns HTTP 200. It also uploads a version-less copy of the DMG
+   named `Agent-Usage-Monitor-macOS.dmg`, so the website can link to the stable URL
+   `…/releases/latest/download/Agent-Usage-Monitor-macOS.dmg` (a human-download
+   convenience only — the updater still uses the versioned `.app.tar.gz`).
 3. **Commit `updater/latest.json`** (it now holds the mac signatures) and push.
    This is the cross-machine source of truth — the Windows build pulls it to learn
    the mac signatures and merge `windows-x86_64` into the same version.
@@ -226,7 +229,11 @@ auto-update payload with the **same** Tauri updater key, and merges a
 4. **`./scripts/release-win.ps1 -Publish`** — builds NSIS, signs the payload,
    merges `windows-x86_64` into `updater/latest.json` (preserving darwin), and
    uploads the `.exe` + `.nsis.zip` + `.sig` + `latest.json` into the existing
-   `v<VERSION>` release with `--clobber`. The release notes are **left untouched**.
+   `v<VERSION>` release with `--clobber`. It also uploads a version-less copy of the
+   installer named `Agent-Usage-Monitor-Windows-setup.exe` for the website's stable
+   `…/releases/latest/download/Agent-Usage-Monitor-Windows-setup.exe` link (human
+   download only; the updater uses the versioned `.nsis.zip`). The release notes are
+   **left untouched**.
 5. Commit + push `updater/latest.json` (signed commit — see below).
 6. Verify the endpoint serves all three platforms:
    ```bash

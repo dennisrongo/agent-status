@@ -152,6 +152,17 @@ if [[ "$PUBLISH" == true ]]; then
   fi
   TAG="v${VERSION}"
 
+  # Version-less convenience copy so the website can link to a stable URL
+  # (…/releases/latest/download/Agent-Usage-Monitor-macOS.dmg) that always resolves
+  # to the newest DMG without editing HTML each release. It's a byte-identical copy
+  # of the signed+notarized DMG (staple travels with the bytes), used for human
+  # downloads only — the auto-updater still uses the versioned .app.tar.gz.
+  STABLE_DMG=""
+  if [[ -n "$DMG_FILE" ]]; then
+    STABLE_DMG="$(dirname "$DMG_FILE")/Agent-Usage-Monitor-macOS.dmg"
+    cp -f "$DMG_FILE" "$STABLE_DMG"
+  fi
+
   # Build release notes from the commit log since the previous release tag, so
   # the GitHub release records what actually changed in this version instead of
   # a static blurb. The Windows build only uploads assets (never edits the body),
@@ -189,13 +200,13 @@ if [[ "$PUBLISH" == true ]]; then
     echo "==> Release $TAG exists — refreshing notes + uploading/overwriting assets"
     gh release edit "$TAG" --notes-file "$NOTES_FILE"
     gh release upload "$TAG" --clobber \
-      "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
+      "$DMG_FILE" ${STABLE_DMG:+"$STABLE_DMG"} "$TARBALL" "$SIG_FILE" "$MANIFEST"
   else
     echo "==> Creating release $TAG on $REPO"
     gh release create "$TAG" \
       --title "$TAG — Agent Usage Monitor" \
       --notes-file "$NOTES_FILE" \
-      "$DMG_FILE" "$TARBALL" "$SIG_FILE" "$MANIFEST"
+      "$DMG_FILE" ${STABLE_DMG:+"$STABLE_DMG"} "$TARBALL" "$SIG_FILE" "$MANIFEST"
   fi
   echo
   echo "==> Verifying the updater endpoint resolves unauthenticated"

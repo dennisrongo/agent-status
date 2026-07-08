@@ -393,9 +393,17 @@ Write-Host '    Commit + push this file so the manifest in git matches what is p
 if ($Publish) {
   Write-Host ''
   Write-Host "==> Uploading Windows assets into release $Tag (notes left untouched)"
+  # Version-less convenience copy so the website can link to a stable URL
+  # (…/releases/latest/download/Agent-Usage-Monitor-Windows-setup.exe) that always
+  # resolves to the newest installer without editing HTML each release. It's a
+  # byte-identical copy of the built .exe, for human downloads only — the
+  # auto-updater still uses the versioned .nsis.zip.
+  $StableExe = Join-Path $Exe.DirectoryName 'Agent-Usage-Monitor-Windows-setup.exe'
+  Copy-Item -LiteralPath $Exe.FullName -Destination $StableExe -Force
+
   $uploads = @()
   if ($Exe) { $uploads += $Exe.FullName }
-  $uploads += $Zip.FullName, $Sig.FullName, $ManifestPath
+  $uploads += $StableExe, $Zip.FullName, $Sig.FullName, $ManifestPath
   gh release upload $Tag --clobber @uploads
   Assert-LastExit 'gh release upload'
 
