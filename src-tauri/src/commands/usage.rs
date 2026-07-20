@@ -59,6 +59,8 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         copilot_prev,
         copilot_due,
         alibaba_cached,
+        alibaba_prev,
+        alibaba_due,
     ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -79,6 +81,13 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // near-simultaneous collects and every tray hover).
         let copilot_due = guard.copilot_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::COPILOT_MIN_SECS
+        });
+        // The Bailian CLI shell-out runs five sequential Node.js subprocesses,
+        // so polling it on every collect cycle would saturate the process with
+        // ~16s of blocking work per tick. Throttle it the same way and serve the
+        // last good reading (bounded by ALIBABA_CACHE_MAX_SECS) in between.
+        let alibaba_due = guard.alibaba_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::ALIBABA_MIN_SECS
         });
         (
             guard.settings.plan.clone(),
@@ -111,6 +120,18 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                     (now - t).num_seconds() < crate::state::ALIBABA_CACHE_MAX_SECS
                 })
             }),
+            // Previous snapshot's Alibaba status — used the same way `copilot_prev`
+            // feeds `resolve_copilot`: when throttled and the last-good cache is
+            // empty, repeat whatever was shown last (e.g. `not_configured` after a
+            // CLI-uninstall) so a throttled second collect can't contradict the
+            // first. Without this the not-due arm would synthesize a
+            // `configured:true` placeholder and flip the Alibaba tab on/off.
+            guard
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.vendor.as_ref())
+                .map(|v| v.alibaba.clone()),
+            alibaba_due,
         )
     };
 
@@ -239,27 +260,58 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // Live vendor fetches (network, async). The Bailian CLI shell-out is
     // blocking I/O, so it runs on the blocking pool concurrently with the
     // async HTTP fetches.
-    let alibaba_handle = tokio::task::spawn_blocking(alibaba::fetch);
-    let glm_status = fetch_glm(zai_key, &glm_endpoint, now).await;
-    let anthropic_status = fetch_anthropic(anthropic_key).await;
-    let alibaba_fetched = alibaba_handle
-        .await
-        .unwrap_or_else(|e| VendorStatus::failed(format!("bl task: {e}")));
+    //
+    // Throttle the Bailian fetch to once per ALIBABA_MIN_SECS — each one spawns
+    // five sequential Node.js subprocess calls (~16s), so polling on every
+    // collect cycle would saturate the process. When throttled we serve the
+    // cached reading (already bounded by ALIBABA_CACHE_MAX_SECS at the read
+    // above), falling back to the previous snapshot's status, and skip the
+    // subprocess entirely. This mirrors resolve_copilot's `due` gate.
+    let alibaba_handle = alibaba_due.then(|| tokio::task::spawn_blocking(alibaba::fetch));
+    // GLM + Anthropic are quick HTTP calls — always fetch them, concurrent with
+    // the Bailian shell-out when one is in flight.
+    let (glm_status, anthropic_status) =
+        tokio::join!(fetch_glm(zai_key, &glm_endpoint, now), fetch_anthropic(anthropic_key));
     // Keep the last good Bailian reading through a transient `bl` failure so one
     // bad tick doesn't flip real quota data into a "couldn't read" card. Only a
     // failure with nothing cached (first fetch, or a prolonged outage past
     // ALIBABA_CACHE_MAX_SECS) reaches the UI as an error. A missing CLI
     // (`configured == false`) is terminal — never serve stale data for it.
-    let (alibaba_status, alibaba_fresh_good, alibaba_clear_cache) = if alibaba_fetched.ok {
-        (alibaba_fetched.clone(), Some(alibaba_fetched), false)
-    } else if alibaba_fetched.configured {
-        match alibaba_cached {
-            Some(good) => (good, None, false),
-            None => (alibaba_fetched, None, false),
-        }
-    } else {
-        (alibaba_fetched, None, true)
-    };
+    //
+    // `alibaba_attempted` drives the throttle stamp (see `resolve_copilot`'s
+    // 4th return). It's `false` in the not-due arm and in the transient-no-cache
+    // arm, so one flaky `bl` on the very first fetch doesn't pin the card for
+    // the full ALIBABA_MIN_SECS — re-attempt next collect, just like Copilot.
+    let (alibaba_status, alibaba_fresh_good, alibaba_clear_cache, alibaba_attempted) =
+        match alibaba_handle {
+            Some(h) => {
+                let fetched =
+                    h.await.unwrap_or_else(|e| VendorStatus::failed(format!("bl task: {e}")));
+                if fetched.ok {
+                    (fetched.clone(), Some(fetched), false, true)
+                } else if fetched.configured {
+                    match alibaba_cached {
+                        Some(good) => (good, None, false, true),
+                        // Transient failure with nothing cached — don't stamp the
+                        // throttle so the next collect retries immediately.
+                        None => (fetched, None, false, false),
+                    }
+                } else {
+                    (fetched, None, true, true)
+                }
+            }
+            // Throttled — don't spawn the CLI. Prefer the last good reading, then
+            // the previous snapshot's status (e.g. `not_configured` after a
+            // CLI-uninstall), so a throttled collect can't contradict the last
+            // due-fetch. Only synthesize a placeholder when neither exists (the
+            // very first collect, racing before any fetch stamps).
+            None => {
+                let status = alibaba_cached
+                    .or(alibaba_prev)
+                    .unwrap_or_else(|| VendorStatus::failed("Alibaba status not read yet"));
+                (status, None, false, false)
+            }
+        };
     let (copilot_status, copilot_fresh_good, copilot_terminal, copilot_attempted) =
         resolve_copilot(copilot_token, copilot_cached, copilot_prev, copilot_due).await;
 
@@ -328,6 +380,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         } else if alibaba_clear_cache {
             guard.alibaba_last_good = None;
             guard.alibaba_last_good_at = None;
+        }
+        if alibaba_attempted {
+            guard.alibaba_attempted_at = Some(now);
         }
     }
 
@@ -972,6 +1027,7 @@ pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
     // Only refresh on success — an error leaves the overview untouched, which
     // is the right thing for a failed install (no half-state to broadcast).
     if msg.is_ok() {
+        clear_alibaba_throttle(&app)?;
         let snapshot = collect(&app).await?;
         let _ = app.emit("usage-updated", &snapshot);
     }
@@ -988,10 +1044,24 @@ pub async fn bailian_cli_login(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     if msg.is_ok() {
+        clear_alibaba_throttle(&app)?;
         let snapshot = collect(&app).await?;
         let _ = app.emit("usage-updated", &snapshot);
     }
     msg
+}
+
+/// Clear the Bailian fetch throttle and stale cache so the next collect re-hits
+/// the CLI immediately after an install or login (mirrors `clear_claude_throttle`
+/// and the resets in `copilot_device_poll`). Without this the first post-login
+/// collect would serve the cached/old reading for up to `ALIBABA_MIN_SECS`.
+fn clear_alibaba_throttle(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.alibaba_attempted_at = None;
+    guard.alibaba_last_good = None;
+    guard.alibaba_last_good_at = None;
+    Ok(())
 }
 
 fn update_settings(
