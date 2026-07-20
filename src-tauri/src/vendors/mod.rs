@@ -2,6 +2,7 @@
 //! pure and unit-tested. Every fetch degrades gracefully to an error string so
 //! a bad key or endpoint never crashes the scan.
 
+pub mod alibaba;
 pub mod anthropic;
 pub mod claude;
 pub mod copilot;
@@ -99,6 +100,7 @@ pub struct VendorReport {
     pub glm: VendorStatus,
     pub anthropic: VendorStatus,
     pub copilot: VendorStatus,
+    pub alibaba: VendorStatus,
 }
 
 /// Which providers are actually present on this machine, so the UI can hide the
@@ -109,12 +111,14 @@ pub struct VendorReport {
 /// - `glm`: a z.ai API key is configured, or local MCP server logs exist.
 /// - `copilot`: a Copilot/GitHub OAuth token was found locally (editor token
 ///   file or `gh` CLI) or connected in-app.
+/// - `alibaba`: the Bailian CLI (`bl`) is on PATH.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detection {
     pub claude: bool,
     pub glm: bool,
     pub copilot: bool,
+    pub alibaba: bool,
     /// Whether a Claude Code OAuth login is actually present on this machine
     /// (distinct from `claude`, which is also true when only the CLI is on PATH).
     /// Drives the connected/disconnected control, independent of the live toggle.

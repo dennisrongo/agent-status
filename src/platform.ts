@@ -19,13 +19,17 @@ export const isWindows =
  * corner in one synchronous step. Doing it as two webview calls (setSize then
  * setPosition) races WebView2's IPC — the second op is frequently dropped,
  * which left the window stuck at the wrong size or position.
+ *
+ * In float mode the window is free-floating (user-dragged), so both platforms
+ * use a plain setSize — no re-pinning to any corner.
  */
 export async function fitWindowHeight(
   win: Window,
   width: number,
   height: number,
+  floating = false,
 ): Promise<void> {
-  if (!isWindows) {
+  if (floating || !isWindows) {
     await win.setSize(new LogicalSize(width, height));
     return;
   }

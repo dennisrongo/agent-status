@@ -2,7 +2,7 @@
 
 # 📊 Agent Usage Monitor
 
-### A lightweight macOS **menubar widget** that tracks your Claude Code & GLM CLI usage in real time.
+### A lightweight **menubar widget** that tracks your AI coding agent usage in real time.
 
 Session / weekly / Opus limits · token spend · cost estimates · per-session history — all read from local logs, refreshed on a timer, living quietly in your menu bar.
 

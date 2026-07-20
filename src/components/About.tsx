@@ -61,7 +61,7 @@ export function About() {
         </span>
         <div>
           <div className="about-name">Agent Usage Monitor</div>
-          <div className="about-tagline">Menubar usage for Claude Code &amp; GLM CLI</div>
+          <div className="about-tagline">Menubar usage for AI coding agents</div>
         </div>
       </div>
 

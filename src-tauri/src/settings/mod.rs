@@ -44,6 +44,14 @@ pub struct Settings {
     /// Which provider the tray hover popover previews: "claude" or "glm".
     /// Defaults to Claude (the local-by-default provider).
     pub tooltip_provider: String,
+    /// Window placement mode: "dock" (anchored to the tray icon / taskbar
+    /// corner on every open) or "float" (stays where the user drags it).
+    pub window_mode: String,
+    /// Last window position in float mode (physical pixels, top-left origin).
+    /// Restored on next open so the window reappears where the user left it.
+    /// `None` until the user first moves the window in float mode.
+    pub float_x: Option<i32>,
+    pub float_y: Option<i32>,
 }
 
 impl Default for Settings {
@@ -59,6 +67,9 @@ impl Default for Settings {
             launch_on_startup: true,
             minimal_view: false,
             tooltip_provider: "claude".to_string(),
+            window_mode: "dock".to_string(),
+            float_x: None,
+            float_y: None,
         }
     }
 }
@@ -78,6 +89,7 @@ pub struct SettingsView {
     pub launch_on_startup: bool,
     pub minimal_view: bool,
     pub tooltip_provider: String,
+    pub window_mode: String,
 }
 
 impl From<&Settings> for SettingsView {
@@ -93,6 +105,7 @@ impl From<&Settings> for SettingsView {
             launch_on_startup: s.launch_on_startup,
             minimal_view: s.minimal_view,
             tooltip_provider: s.tooltip_provider.clone(),
+            window_mode: s.window_mode.clone(),
         }
     }
 }

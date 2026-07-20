@@ -68,7 +68,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
-  provider: "claude" | "glm" | "copilot";
+  provider: "claude" | "glm" | "copilot" | "alibaba";
 }
 
 export interface Provider {
@@ -107,12 +107,14 @@ export interface VendorReport {
   glm: VendorStatus;
   anthropic: VendorStatus;
   copilot: VendorStatus;
+  alibaba: VendorStatus;
 }
 
 export interface Detection {
   claude: boolean;
   glm: boolean;
   copilot: boolean;
+  alibaba: boolean;
   /** A Claude Code OAuth login is present on this machine (independent of the
    * live toggle). Drives the connect/disconnect control. */
   claudeSignedIn: boolean;
@@ -144,9 +146,17 @@ export interface ClaudeLoginInfo {
   authorizeUrl: string;
 }
 
+export interface BailianCliStatus {
+  installed: boolean;
+  authenticated: boolean;
+  authHint: string | null;
+}
+
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm" | "copilot";
+export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba";
+
+export type WindowMode = "dock" | "float";
 
 export interface SettingsView {
   plan: PlanKey;
@@ -159,4 +169,5 @@ export interface SettingsView {
   launchOnStartup: boolean;
   minimalView: boolean;
   tooltipProvider: TooltipProvider;
+  windowMode: WindowMode;
 }

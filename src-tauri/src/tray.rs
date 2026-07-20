@@ -11,6 +11,7 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 use crate::scanner::UsageSnapshot;
+use crate::settings;
 use crate::state::AppState;
 
 /// Tray icon id, reused to look the icon back up later.
@@ -41,7 +42,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "quit" => app.exit(0),
+            "quit" => {
+                // Persist the float position so it survives a quit/restart.
+                if let Some(win) = app.get_webview_window("main") {
+                    save_float_position(app, &win);
+                }
+                app.exit(0);
+            }
             // Menu-driven open has no click point; fall back to the cached
             // tray location inside `toggle_window`.
             "show" => toggle_window(app, None),
@@ -105,19 +112,91 @@ fn build_hover_window(app: &AppHandle) -> tauri::Result<()> {
 fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
     let Some(window) = app.get_webview_window("main") else { return };
     if window.is_visible().unwrap_or(false) {
+        // In float mode, remember where the user placed the window so it
+        // reappears at the same spot on the next open (and after restarts).
+        save_float_position(app, &window);
         let _ = window.hide();
         return;
     }
 
-    position_dropdown(&window, tray_rect);
+    // In float mode the window stays where the user dragged it — no
+    // repositioning to the tray icon / taskbar corner.
+    let floating = app
+        .state::<std::sync::Mutex<AppState>>()
+        .lock()
+        .map(|g| g.settings.window_mode == "float")
+        .unwrap_or(false);
+
+    if floating {
+        restore_float_position(app, &window);
+    } else {
+        position_dropdown(&window, tray_rect);
+    }
     let _ = window.show();
-    // macOS can re-place a window onto a different monitor when it becomes
-    // visible, undoing the position we set while it was hidden. Re-assert it
-    // now that it's on-screen so the dropdown reliably lands on the display
-    // whose menu bar was clicked.
-    position_dropdown(&window, tray_rect);
+    if !floating {
+        // macOS can re-place a window onto a different monitor when it becomes
+        // visible, undoing the position we set while it was hidden. Re-assert it
+        // now that it's on-screen so the dropdown reliably lands on the display
+        // whose menu bar was clicked.
+        position_dropdown(&window, tray_rect);
+    }
     let _ = window.set_focus();
     refresh_on_open(app);
+}
+
+/// Persist the window's current position when in float mode so it survives
+/// hide/show cycles and app restarts.
+fn save_float_position(app: &AppHandle, window: &WebviewWindow) {
+    let is_float = app
+        .state::<std::sync::Mutex<AppState>>()
+        .lock()
+        .map(|g| g.settings.window_mode == "float")
+        .unwrap_or(false);
+    if !is_float {
+        return;
+    }
+    let Ok(pos) = window.outer_position() else { return };
+    if let Ok(mut guard) = app.state::<std::sync::Mutex<AppState>>().lock() {
+        guard.settings.float_x = Some(pos.x);
+        guard.settings.float_y = Some(pos.y);
+        let _ = settings::save(app, &guard.settings);
+    }
+}
+
+/// Restore the saved float position, but only if it lands on a currently
+/// connected monitor — a stale position from a disconnected display would
+/// leave the window off-screen and unreachable.
+fn restore_float_position(app: &AppHandle, window: &WebviewWindow) {
+    let saved = app
+        .state::<std::sync::Mutex<AppState>>()
+        .lock()
+        .ok()
+        .and_then(|g| match (g.settings.float_x, g.settings.float_y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        });
+    let Some((x, y)) = saved else { return };
+
+    // Verify the saved position is within a connected monitor's bounds.
+    let on_screen = window
+        .available_monitors()
+        .map(|monitors| {
+            monitors.iter().any(|m| {
+                let p = m.position();
+                let s = m.size();
+                x >= p.x
+                    && y >= p.y
+                    && x < p.x + s.width as i32
+                    && y < p.y + s.height as i32
+            })
+        })
+        .unwrap_or(false);
+
+    if on_screen {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    // If the monitor is gone, fall through — the OS will place the window
+    // on a visible display by default.
 }
 
 /// Place the dropdown/popover relative to the tray icon. The anchor differs by

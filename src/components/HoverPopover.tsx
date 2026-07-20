@@ -40,7 +40,7 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot")
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba")
             setProvider(e.payload);
         }),
       );
@@ -92,7 +92,16 @@ function HoverContent({
         vendor={snapshot.vendor?.copilot}
         srcLabel="Copilot"
         setupHint="Connect GitHub Copilot in the app to see quota."
-        errorLead="Couldn’t read Copilot usage"
+        errorLead="Couldn't read Copilot usage"
+      />
+    );
+  if (provider === "alibaba")
+    return (
+      <VendorMeters
+        vendor={snapshot.vendor?.alibaba}
+        srcLabel="Bailian"
+        setupHint="Install the Bailian CLI (bl) to see usage."
+        errorLead="Couldn't read Bailian CLI"
       />
     );
   return <ClaudeContent snapshot={snapshot} />;

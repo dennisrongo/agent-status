@@ -3,12 +3,14 @@ import { listen } from "@tauri-apps/api/event";
 
 import { isTauriReady } from "../tauriReady";
 import type {
+  BailianCliStatus,
   ClaudeLoginInfo,
   CopilotDeviceCode,
   PlanKey,
   SettingsView,
   TooltipProvider,
   UsageSnapshot,
+  WindowMode,
 } from "../types";
 import { useTauriCommand } from "./useTauriCommand";
 
@@ -27,6 +29,7 @@ export function useUsage() {
   const launchOnStartupCmd = useTauriCommand<SettingsView>("set_launch_on_startup");
   const minimalViewCmd = useTauriCommand<SettingsView>("set_minimal_view");
   const tooltipProviderCmd = useTauriCommand<SettingsView>("set_tooltip_provider");
+  const windowModeCmd = useTauriCommand<SettingsView>("set_window_mode");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -38,6 +41,9 @@ export function useUsage() {
   const claudeLoginFinishCmd = useTauriCommand<UsageSnapshot>("claude_login_finish");
   const claudeLoginCancelCmd = useTauriCommand<void>("claude_login_cancel");
   const claudeSignOutCmd = useTauriCommand<UsageSnapshot>("claude_sign_out");
+  const bailianStatusCmd = useTauriCommand<BailianCliStatus>("bailian_cli_status");
+  const bailianInstallCmd = useTauriCommand<string>("install_bailian_cli");
+  const bailianLoginCmd = useTauriCommand<string>("bailian_cli_login");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -86,6 +92,21 @@ export function useUsage() {
     if (data) applySnapshot(data);
     return data;
   }, [claudeSignOutCmd, applySnapshot]);
+
+  const bailianStatus = useCallback(
+    () => bailianStatusCmd.execute(),
+    [bailianStatusCmd],
+  );
+
+  const installBailian = useCallback(
+    () => bailianInstallCmd.execute(),
+    [bailianInstallCmd],
+  );
+
+  const loginBailian = useCallback(
+    () => bailianLoginCmd.execute(),
+    [bailianLoginCmd],
+  );
 
   const setPlan = useCallback(
     async (plan: PlanKey) => {
@@ -143,6 +164,14 @@ export function useUsage() {
       if (updated) setSettings(updated);
     },
     [tooltipProviderCmd],
+  );
+
+  const setWindowMode = useCallback(
+    async (mode: WindowMode) => {
+      const updated = await windowModeCmd.execute({ mode });
+      if (updated) setSettings(updated);
+    },
+    [windowModeCmd],
   );
 
   const setGlmEndpoint = useCallback(
@@ -231,6 +260,7 @@ export function useUsage() {
     setLaunchOnStartup,
     setMinimalView,
     setTooltipProvider,
+    setWindowMode,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,
@@ -247,6 +277,13 @@ export function useUsage() {
     claudeLoginError: claudeLoginFinishCmd.error ?? claudeLoginStartCmd.error,
     claudeSignOut,
     claudeSignOutError: claudeSignOutCmd.error,
+    bailianStatus,
+    installBailian,
+    bailianInstallBusy: bailianInstallCmd.isLoading,
+    bailianInstallError: bailianInstallCmd.error,
+    loginBailian,
+    bailianLoginBusy: bailianLoginCmd.isLoading,
+    bailianLoginError: bailianLoginCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,

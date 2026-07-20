@@ -10,7 +10,7 @@ use crate::error::ResultExt;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
-use crate::vendors::{anthropic, claude, copilot, glm, Detection, VendorReport, VendorStatus};
+use crate::vendors::{alibaba, anthropic, claude, copilot, glm, Detection, VendorReport, VendorStatus};
 
 /// The user code + verification URL the UI shows during a Copilot device-flow
 /// connect. The device code itself stays server-side in `AppState`.
@@ -226,9 +226,15 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         claude_ts = claude::token_status(now);
     }
 
-    // Live vendor fetches (network, async).
+    // Live vendor fetches (network, async). The Bailian CLI shell-out is
+    // blocking I/O, so it runs on the blocking pool concurrently with the
+    // async HTTP fetches.
+    let alibaba_handle = tokio::task::spawn_blocking(alibaba::fetch);
     let glm_status = fetch_glm(zai_key, &glm_endpoint, now).await;
     let anthropic_status = fetch_anthropic(anthropic_key).await;
+    let alibaba_status = alibaba_handle
+        .await
+        .unwrap_or_else(|e| VendorStatus::failed(format!("bl task: {e}")));
     let (copilot_status, copilot_fresh_good, copilot_terminal, copilot_attempted) =
         resolve_copilot(copilot_token, copilot_cached, copilot_prev, copilot_due).await;
 
@@ -241,6 +247,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         claude: claude_ts.present || claude::cli_on_path() || snapshot.meta.files_scanned > 0,
         glm: glm_status.configured,
         copilot: copilot_status.configured,
+        alibaba: alibaba_status.configured,
         claude_signed_in: claude_ts.present,
         // "Expired" here means the login genuinely needs a manual reconnect — not
         // merely that the short-lived access token is past its clock. A live
@@ -258,6 +265,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         glm: glm_status,
         anthropic: anthropic_status,
         copilot: copilot_status,
+        alibaba: alibaba_status,
     });
 
     {
@@ -557,10 +565,27 @@ pub fn set_tooltip_provider(
     provider: String,
 ) -> Result<SettingsView, String> {
     match provider.as_str() {
-        "claude" | "glm" | "copilot" => {}
+        "claude" | "glm" | "copilot" | "alibaba" => {}
         other => return Err(format!("unknown provider: {other}")),
     }
     let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
+    settings::save(&app, &updated).into_string()?;
+    Ok((&updated).into())
+}
+
+/// Switch between "dock" (anchored to the tray icon / taskbar corner) and
+/// "float" (user-draggable, stays where placed) window placement.
+#[tauri::command]
+pub fn set_window_mode(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    mode: String,
+) -> Result<SettingsView, String> {
+    match mode.as_str() {
+        "dock" | "float" => {}
+        other => return Err(format!("unknown window mode: {other}")),
+    }
+    let updated = update_settings(&state, |s| s.window_mode = mode)?;
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())
 }
@@ -661,14 +686,24 @@ pub fn fit_tray_window(app: AppHandle, label: String, width: f64, height: f64) {
     // keeps the bottom-right corner exactly where it was placed (no horizontal
     // drift). current_monitor reflects the display the window is on after the
     // open placement; fall back to primary if it can't be read mid-resize.
+    // Skipped in float mode — the window stays where the user dragged it.
     #[cfg(target_os = "windows")]
-    if let Some(mon) = win
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| win.primary_monitor().ok().flatten())
     {
-        crate::tray::pin_bottom_right(&win, &mon);
+        let floating = app
+            .state::<std::sync::Mutex<AppState>>()
+            .lock()
+            .map(|g| g.settings.window_mode == "float")
+            .unwrap_or(false);
+        if !floating {
+            if let Some(mon) = win
+                .current_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| win.primary_monitor().ok().flatten())
+            {
+                crate::tray::pin_bottom_right(&win, &mon);
+            }
+        }
     }
 }
 
@@ -881,6 +916,29 @@ fn clear_pending_copilot(app: &AppHandle) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     guard.pending_copilot_device = None;
     Ok(())
+}
+
+/// Query the Bailian CLI's install + auth status for the Settings UI.
+#[tauri::command]
+pub fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
+    Ok(alibaba::auth_status())
+}
+
+/// Install the Bailian CLI globally via npm. Blocking — the UI shows a spinner.
+#[tauri::command]
+pub async fn install_bailian_cli() -> Result<String, String> {
+    tokio::task::spawn_blocking(alibaba::install)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Run `bl auth login --console` — opens the browser for the user to
+/// authenticate with Alibaba Cloud. Blocking — the UI shows a spinner.
+#[tauri::command]
+pub async fn bailian_cli_login() -> Result<String, String> {
+    tokio::task::spawn_blocking(alibaba::login)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn update_settings(

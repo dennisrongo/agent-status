@@ -16,10 +16,11 @@
   --violet:    oklch(70% 0.13 290);
   /* Per-vendor brand colors for the provider indicators (kept separate from
      --accent, which the whole app uses). Claude coral/orange (Anthropic),
-     z.ai blue (matches z.ai's own UI), GitHub Copilot green. */
+     z.ai blue (matches z.ai's own UI), GitHub Copilot green, Alibaba orange. */
   --claude:    oklch(70% 0.14 46);
   --glm:       oklch(64% 0.17 264);
   --copilot:   oklch(72% 0.16 145);
+  --alibaba:   oklch(70% 0.18 55);
   --font:      -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   --mono:      "JetBrains Mono", "SF Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
@@ -56,6 +57,20 @@ body {
 .head h1 { font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.15; }
 .head .sub { font-size: 11px; color: var(--faint); font-family: var(--mono); margin-top: 1px; letter-spacing: -0.02em; }
 .head .spacer { flex: 1; }
+.head.float-drag { cursor: grab; }
+.head.float-drag:active { cursor: grabbing; }
+.head.float-drag .spacer::after {
+  content: "";
+  display: inline-block;
+  vertical-align: middle;
+  width: 16px;
+  height: 10px;
+  margin-left: 2px;
+  background: radial-gradient(circle, var(--faint) 1px, transparent 1.3px) 0 0 / 5px 5px repeat;
+  opacity: .45;
+  transition: opacity .15s;
+}
+.head.float-drag:hover .spacer::after { opacity: .8; }
 .plan-select { appearance: none; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border-2); border-radius: 7px; font-family: var(--mono); font-size: 11px; padding: 5px 8px; cursor: pointer; }
 .plan-select:hover { color: var(--fg); }
 .refresh { appearance: none; border: 1px solid var(--border-2); background: var(--surface-2); color: var(--muted); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: grid; place-items: center; transition: .15s; flex: none; }
@@ -84,6 +99,7 @@ body {
 .seg-dot.claude { background: var(--claude); }
 .seg-dot.glm { background: var(--glm); }
 .seg-dot.copilot { background: var(--copilot); }
+.seg-dot.alibaba { background: var(--alibaba); }
 
 /* GLM connect empty-state */
 .connect-card { background: var(--surface); border: 1px dashed var(--border-2); border-radius: 10px; padding: 16px 14px; text-align: center; }
@@ -111,6 +127,7 @@ body {
 .panel.prov-claude  { --brand: var(--claude); }
 .panel.prov-glm     { --brand: var(--glm); }
 .panel.prov-copilot { --brand: var(--copilot); }
+.panel.prov-alibaba { --brand: var(--alibaba); }
 
 .kpi.accent .k-num { color: var(--brand, var(--accent)); }
 .kpi.ok .k-num { color: var(--ok); }
@@ -225,6 +242,7 @@ body {
 .s-prov.claude { background: var(--claude); }
 .s-prov.glm { background: var(--glm); }
 .s-prov.copilot { background: var(--copilot); }
+.s-prov.alibaba { background: var(--alibaba); }
 .sess-row .s-meta { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 3px; display: flex; gap: 8px; letter-spacing: -0.02em; }
 .badge { display: inline-block; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-2); color: var(--muted); }
 .badge.opus { color: var(--violet); border-color: oklch(70% 0.13 290 / .4); }

@@ -111,6 +111,7 @@ pub fn run() {
             commands::set_minimal_view,
             commands::fit_tray_window,
             commands::set_tooltip_provider,
+            commands::set_window_mode,
             commands::set_refresh_secs,
             commands::set_glm_endpoint,
             commands::set_api_key,
@@ -119,6 +120,9 @@ pub fn run() {
             commands::copilot_device_poll,
             commands::copilot_device_cancel,
             commands::disconnect_copilot,
+            commands::bailian_cli_status,
+            commands::install_bailian_cli,
+            commands::bailian_cli_login,
             commands::open_url,
         ])
         .run(tauri::generate_context!())

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider, WindowMode } from "../types";
 
 interface Props {
   settings: SettingsView;
@@ -22,12 +22,20 @@ interface Props {
   setLaunchOnStartup: (enabled: boolean) => Promise<void>;
   setMinimalView: (enabled: boolean) => Promise<void>;
   setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
+  setWindowMode: (mode: WindowMode) => Promise<void>;
   copilotConnected: boolean;
   connectCopilotStart: () => Promise<CopilotDeviceCode | null>;
   copilotPoll: () => Promise<string | null>;
   copilotCancel: () => void;
   disconnectCopilot: () => Promise<void>;
   reloadSettings: () => Promise<void>;
+  bailianStatus: () => Promise<BailianCliStatus | null>;
+  installBailian: () => Promise<string | null>;
+  bailianInstallBusy: boolean;
+  bailianInstallError: string | null;
+  loginBailian: () => Promise<string | null>;
+  bailianLoginBusy: boolean;
+  bailianLoginError: string | null;
   keyError: string | null;
 }
 
@@ -59,12 +67,20 @@ export function Settings({
   setLaunchOnStartup,
   setMinimalView,
   setTooltipProvider,
+  setWindowMode,
   copilotConnected,
   connectCopilotStart,
   copilotPoll,
   copilotCancel,
   disconnectCopilot,
   reloadSettings,
+  bailianStatus,
+  installBailian,
+  bailianInstallBusy,
+  bailianInstallError,
+  loginBailian,
+  bailianLoginBusy,
+  bailianLoginError,
   keyError,
 }: Props) {
   return (
@@ -105,6 +121,23 @@ export function Settings({
           <option value="claude">Claude</option>
           <option value="glm">GLM / z.ai</option>
           <option value="copilot">GitHub Copilot</option>
+          <option value="alibaba">Alibaba Cloud</option>
+        </select>
+      </div>
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Window mode</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+          Dock anchors the window to the tray icon. Float lets you drag it anywhere — including across monitors.
+        </span>
+        <select
+          className="interval-select"
+          value={settings.windowMode}
+          onChange={(e) => setWindowMode(e.target.value as WindowMode)}
+        >
+          <option value="dock">Dock</option>
+          <option value="float">Float</option>
         </select>
       </div>
 
@@ -228,6 +261,20 @@ export function Settings({
         </span>
         <EndpointRow value={settings.glmEndpoint} onSave={setGlmEndpoint} />
       </div>
+
+      <div className="sec-head">
+        <h2>Alibaba Cloud</h2>
+        <span className="meta">via Bailian CLI</span>
+      </div>
+      <BailianCli
+        status={bailianStatus}
+        install={installBailian}
+        installBusy={bailianInstallBusy}
+        installError={bailianInstallError}
+        login={loginBailian}
+        loginBusy={bailianLoginBusy}
+        loginError={bailianLoginError}
+      />
 
       {keyError && <p className="key-err">{keyError}</p>}
 
@@ -648,6 +695,121 @@ function CopilotConnect({
         GitHub audit log. Disconnect any time above.
       </span>
       {msg && <p className="key-err">{msg}</p>}
+    </div>
+  );
+}
+
+function BailianCli({
+  status,
+  install,
+  installBusy,
+  installError,
+  login,
+  loginBusy,
+  loginError,
+}: {
+  status: () => Promise<BailianCliStatus | null>;
+  install: () => Promise<string | null>;
+  installBusy: boolean;
+  installError: string | null;
+  login: () => Promise<string | null>;
+  loginBusy: boolean;
+  loginError: string | null;
+}) {
+  const [cli, setCli] = useState<BailianCliStatus | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(() => {
+    (async () => {
+      const s = await statusRef.current();
+      setCli(s);
+      setChecking(false);
+    })();
+  }, []);
+
+  const doInstall = async () => {
+    setMsg(null);
+    const result = await install();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doLogin = async () => {
+    setMsg(null);
+    const result = await login();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub">Checking for Bailian CLI…</span>
+      </div>
+    );
+  }
+
+  // Not installed → show install button.
+  if (!cli?.installed) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+          <span className="key-status">○ not installed</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+          The Bailian CLI reads your Alibaba Cloud Model Studio usage. Requires
+          Node.js ≥ 22.12 and npm.
+        </span>
+        <button className="btn primary" disabled={installBusy} onClick={() => void doInstall()}>
+          {installBusy ? "Installing…" : "Install Bailian CLI"}
+        </button>
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+        {installError && <p className="key-err">{installError}</p>}
+      </div>
+    );
+  }
+
+  // Installed but not authenticated → show login button.
+  if (!cli.authenticated) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+          <span className="key-status">○ not authenticated</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+          Installed. Sign in to connect your Alibaba Cloud account — a browser
+          window will open to complete the login.
+        </span>
+        <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
+          {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
+        </button>
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+        {loginError && <p className="key-err">{loginError}</p>}
+      </div>
+    );
+  }
+
+  // Installed + authenticated → show connected status.
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+        <span className="key-status set">● connected</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+        {cli.authHint ?? "Authenticated via Bailian CLI."}
+      </span>
     </div>
   );
 }

@@ -10,6 +10,7 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-set-size",
+    "core:window:allow-start-dragging",
     "positioner:default",
     "autostart:allow-enable",
     "autostart:allow-disable",

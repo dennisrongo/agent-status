@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { About } from "./components/About";
@@ -38,6 +38,7 @@ export default function App() {
     setLaunchOnStartup,
     setMinimalView,
     setTooltipProvider,
+    setWindowMode,
     reloadSettings,
     connectCopilotStart,
     copilotPoll,
@@ -51,15 +52,39 @@ export default function App() {
     claudeLoginError,
     claudeSignOut,
     claudeSignOutError,
+    bailianStatus,
+    installBailian,
+    bailianInstallBusy,
+    bailianInstallError,
+    loginBailian,
+    bailianLoginBusy,
+    bailianLoginError,
     isLoading,
     error,
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm" | "copilot">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
+  const floating = settings?.windowMode === "float";
+
+  // In float mode the header is a drag handle that moves the whole window.
+  // `startDragging()` hands the pointer to the OS's native window-drag loop
+  // (macOS performWindowDragWithEvent / Win32 WM_NCLBUTTONDOWN), which tracks
+  // the move across every monitor at the system level — no per-frame JS, so it
+  // stays smooth and never drops mid-drag. Interactive controls in the header
+  // (plan select, refresh button) are excluded so they still receive clicks.
+  const startWindowDrag = useCallback(
+    (e: ReactMouseEvent<HTMLElement>) => {
+      if (!floating) return;
+      if ((e.target as HTMLElement).closest("button, select, input, a")) return;
+      e.preventDefault();
+      void getCurrentWindow().startDragging();
+    },
+    [floating],
+  );
 
   // Fit the window to its content in minimal view (no scrollbar, no dead
   // space); restore the full height otherwise. macOS is anchored top-under-tray
@@ -74,7 +99,7 @@ export default function App() {
     const body = document.querySelector<HTMLElement>(".body");
     const panel = body?.firstElementChild as HTMLElement | null;
     if (!minimal || !root || !body || !panel) {
-      fitWindowHeight(win, WINDOW_WIDTH, FULL_HEIGHT).catch(() => {});
+      fitWindowHeight(win, WINDOW_WIDTH, FULL_HEIGHT, floating).catch(() => {});
       return;
     }
     // Fit to the panel's own height. NB: not body.scrollHeight — that clamps to
@@ -91,8 +116,8 @@ export default function App() {
     const BREATHING_ROOM = isWindows ? 10 : 0;
     const natural = nonBodyChrome + panel.offsetHeight + bodyPad + BREATHING_ROOM;
     const height = Math.min(FULL_HEIGHT, Math.max(200, Math.ceil(natural)));
-    fitWindowHeight(win, WINDOW_WIDTH, height).catch(() => {});
-  }, [minimal, provider, tab, snapshot]);
+    fitWindowHeight(win, WINDOW_WIDTH, height, floating).catch(() => {});
+  }, [minimal, provider, tab, snapshot, floating]);
 
   if (!snapshot) {
     return (
@@ -116,6 +141,7 @@ export default function App() {
   const showClaude = snapshot.detection?.claude ?? true;
   const showGlm = snapshot.detection?.glm ?? true;
   const showCopilot = snapshot.detection?.copilot ?? false;
+  const showAlibaba = snapshot.detection?.alibaba ?? false;
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
   // the Overview shows a connect/reconnect prompt instead of stats. Detection
@@ -129,19 +155,23 @@ export default function App() {
     : true;
   // Claude's local-log totals row for the Providers tab.
   const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
-  const available: ("claude" | "glm" | "copilot")[] = [
+  const available: ("claude" | "glm" | "copilot" | "alibaba")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
+    ...(showAlibaba ? (["alibaba"] as const) : []),
   ];
-  const providerTabs: ("claude" | "glm" | "copilot")[] = available.length
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = available.length
     ? available
     : ["claude", "glm"];
   const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
 
   return (
     <main className="widget">
-      <header className="head">
+      <header
+        className={`head${floating ? " float-drag" : ""}`}
+        onMouseDown={floating ? startWindowDrag : undefined}
+      >
         <span className="logo">
           <svg viewBox="0 0 24 24" fill="none">
             <circle cx="12" cy="12" r="7.5" stroke="oklch(40% 0.04 220)" strokeWidth="3" />
@@ -216,7 +246,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : "Copilot"}
+                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : p === "copilot" ? "Copilot" : "Alibaba"}
                   </button>
                 ))}
               </div>
@@ -318,6 +348,14 @@ export default function App() {
                 onConnect={() => setTab("settings")}
               />
             )}
+
+            {eff === "alibaba" && (
+              <AlibabaOverview
+                vendor={snapshot.vendor?.alibaba}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+              />
+            )}
           </section>
         )}
 
@@ -407,6 +445,14 @@ export default function App() {
                 meta={vendorMeta(snapshot.vendor?.anthropic, "add an admin API key for org cost")}
                 primary={vendorPrimary(snapshot.vendor?.anthropic)}
               />
+              {showAlibaba && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.alibaba)}
+                  name="Alibaba Cloud"
+                  meta={vendorMeta(snapshot.vendor?.alibaba, "install the Bailian CLI (bl)")}
+                  primary={vendorPrimary(snapshot.vendor?.alibaba)}
+                />
+              )}
             </div>
             <div className="note">
               <InfoIcon />
@@ -437,12 +483,20 @@ export default function App() {
             claudeLoginError={claudeLoginError}
             setLaunchOnStartup={setLaunchOnStartup}
             setTooltipProvider={setTooltipProvider}
+            setWindowMode={setWindowMode}
             copilotConnected={settings.copilotConnected}
             connectCopilotStart={connectCopilotStart}
             copilotPoll={copilotPoll}
             copilotCancel={copilotCancel}
             disconnectCopilot={disconnectCopilot}
             reloadSettings={reloadSettings}
+            bailianStatus={bailianStatus}
+            installBailian={installBailian}
+            bailianInstallBusy={bailianInstallBusy}
+            bailianInstallError={bailianInstallError}
+            loginBailian={loginBailian}
+            bailianLoginBusy={bailianLoginBusy}
+            bailianLoginError={bailianLoginError}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -673,6 +727,91 @@ function CopilotOverview({
           </p>
           <button className="btn primary" onClick={onConnect}>
             Connect Copilot →
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function AlibabaOverview({
+  vendor,
+  minimal,
+  onConnect,
+}: {
+  vendor: VendorStatus | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+  const all = vendor?.detail ?? [];
+  const windows = all.filter((d) => d.pct != null);
+  const windowRows = all.filter((d) => d.pct == null && (d.label === "Today" || d.label === "7 days"));
+  const facts = all.filter((d) => d.pct == null && d.label !== "Today" && d.label !== "7 days");
+
+  return (
+    <>
+      {live && vendor ? (
+        <>
+          {windows.length > 0 ? (
+            <QuotaMeters
+              windows={windows}
+              srcLabel="Bailian"
+              minimal={minimal}
+              meta="live · token plan"
+            />
+          ) : windowRows.length > 0 ? (
+            <div
+              className="kpis"
+              style={{ gridTemplateColumns: `repeat(${windowRows.length}, 1fr)` }}
+            >
+              {windowRows.map((d, i) => (
+                <div className="kpi accent" key={`${d.label}-${i}`}>
+                  <div className="k-label">{d.label}</div>
+                  <div className="k-num">{d.value.split("·")[0].trim()}</div>
+                  <div className="k-sub">{d.value.split("·").slice(1).join("·").trim() || "live"}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="kpis glm-kpis">
+              <div className="kpi accent">
+                <div className="k-label">{vendor.secondary || "usage"}</div>
+                <div className="k-num">{vendor.primary}</div>
+                <div className="k-sub">live</div>
+              </div>
+            </div>
+          )}
+          {!minimal && facts.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>{windows.length > 0 ? "Stats" : "Usage"}</h2>
+                <span className="meta">live · Bailian CLI</span>
+              </div>
+              <div className="budget" style={{ marginTop: 9 }}>
+                {facts.map((d, i) => (
+                  <div className="budget-foot" key={`${d.label}-${i}`} style={{ marginTop: 0 }}>
+                    <span className="used">{d.label}</span>
+                    <span className="rem">{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <div className="connect-card">
+          <p className="connect-title">
+            {vendor?.configured
+              ? `Couldn't read Bailian CLI${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Alibaba Cloud usage data yet"}
+          </p>
+          <p className="connect-sub">
+            Install the Bailian CLI (<code>npm i -g bailian-cli</code>) and run{" "}
+            <code>bl auth login --console</code> to see token usage and quota.
+          </p>
+          <button className="btn primary" onClick={onConnect}>
+            Setup guide →
           </button>
         </div>
       )}
