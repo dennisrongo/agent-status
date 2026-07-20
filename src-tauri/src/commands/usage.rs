@@ -1010,9 +1010,17 @@ fn clear_pending_copilot(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Query the Bailian CLI's install + auth status for the Settings UI.
+///
+/// `auth_status()` runs `bl auth status --output json` synchronously — a
+/// Node.js cold-start that takes ~1.4s. A synchronous Tauri command runs on the
+/// main thread, so calling it there would freeze the UI for the full duration
+/// (the Settings tab lag). Run it on the blocking pool instead, matching
+/// `install_bailian_cli` / `bailian_cli_login`.
 #[tauri::command]
-pub fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
-    Ok(alibaba::auth_status())
+pub async fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
+    Ok(tokio::task::spawn_blocking(alibaba::auth_status)
+        .await
+        .map_err(|e| e.to_string())?)
 }
 
 /// Install the Bailian CLI globally via npm. Blocking — the UI shows a spinner.
