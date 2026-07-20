@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod encryption;
 pub mod error;
+pub mod paths;
 pub mod scanner;
 pub mod settings;
 pub mod state;
@@ -19,6 +20,13 @@ use tracing_subscriber::EnvFilter;
 use crate::state::AppState;
 
 pub fn run() {
+    // Repair the PATH before anything else: macOS GUI apps inherit a
+    // minimal PATH and never source shell rc files, so nvm/fnm/Volta/
+    // Homebrew binaries would be invisible to subprocess spawns (e.g. the
+    // Bailian `npm install`). Idempotent and best-effort — on failure it
+    // leaves the inherited PATH untouched.
+    paths::fix_login_path();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()

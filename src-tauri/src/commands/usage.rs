@@ -959,20 +959,37 @@ pub fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
 }
 
 /// Install the Bailian CLI globally via npm. Blocking — the UI shows a spinner.
+/// After a successful install we re-collect and broadcast: `find_cli()` will now
+/// resolve, so `detection.alibaba` flips to true and the tab appears without a
+/// window toggle. Mirrors the post-mutation contract in `claude_login_finish`.
 #[tauri::command]
-pub async fn install_bailian_cli() -> Result<String, String> {
-    tokio::task::spawn_blocking(alibaba::install)
+pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(alibaba::install)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    // Only refresh on success — an error leaves the overview untouched, which
+    // is the right thing for a failed install (no half-state to broadcast).
+    if msg.is_ok() {
+        let snapshot = collect(&app).await?;
+        let _ = app.emit("usage-updated", &snapshot);
+    }
+    msg
 }
 
 /// Run `bl auth login --console` — opens the browser for the user to
-/// authenticate with Alibaba Cloud. Blocking — the UI shows a spinner.
+/// authenticate with Alibaba Cloud. Blocking — the UI shows a spinner. After a
+/// successful login we re-collect and broadcast so the Alibaba card populates
+/// immediately, matching `claude_login_finish` / `copilot_device_poll`.
 #[tauri::command]
-pub async fn bailian_cli_login() -> Result<String, String> {
-    tokio::task::spawn_blocking(alibaba::login)
+pub async fn bailian_cli_login(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(alibaba::login)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        let snapshot = collect(&app).await?;
+        let _ = app.emit("usage-updated", &snapshot);
+    }
+    msg
 }
 
 fn update_settings(
