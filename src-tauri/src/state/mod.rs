@@ -106,6 +106,15 @@ pub struct AppState {
     /// days-long endpoint failure can't keep presenting a quota window that has
     /// since reset as if it were current.
     pub copilot_last_good_at: Option<DateTime<Utc>>,
+    /// Last *successful* Bailian CLI reading. The `bl` shell-out can fail
+    /// transiently (network blip, CLI timeout, momentary auth hiccup); keeping
+    /// the last good reading means one bad tick doesn't flip the Alibaba card
+    /// from real quota data to a "couldn't read" error. Bounded by
+    /// `ALIBABA_CACHE_MAX_SECS` so a prolonged outage can't present a
+    /// since-reset quota window as current.
+    pub alibaba_last_good: Option<VendorStatus>,
+    /// When `alibaba_last_good` was captured.
+    pub alibaba_last_good_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -135,6 +144,12 @@ pub const COPILOT_MIN_SECS: i64 = 120;
 /// since reset) as current.
 pub const COPILOT_CACHE_MAX_SECS: i64 = 1800;
 
+/// Longest a cached Bailian reading is served while `bl` fetches keep failing.
+/// Short blips ride on the cache; beyond this the card admits it can't refresh
+/// rather than presenting an increasingly stale quota (or a window that has
+/// since reset) as current.
+pub const ALIBABA_CACHE_MAX_SECS: i64 = 1800;
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
@@ -148,6 +163,8 @@ impl AppState {
             copilot_last_good: None,
             copilot_attempted_at: None,
             copilot_last_good_at: None,
+            alibaba_last_good: None,
+            alibaba_last_good_at: None,
         }
     }
 }

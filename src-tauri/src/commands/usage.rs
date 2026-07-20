@@ -57,6 +57,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         copilot_cached,
         copilot_prev,
         copilot_due,
+        alibaba_cached,
     ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -101,6 +102,14 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 .and_then(|s| s.vendor.as_ref())
                 .map(|v| v.copilot.clone()),
             copilot_due,
+            // Same protection for the Bailian CLI: a transient `bl` failure
+            // (network blip, CLI timeout) shouldn't blank real quota data, so
+            // serve the last good reading while it's recent enough.
+            guard.alibaba_last_good.clone().filter(|_| {
+                guard.alibaba_last_good_at.is_some_and(|t| {
+                    (now - t).num_seconds() < crate::state::ALIBABA_CACHE_MAX_SECS
+                })
+            }),
         )
     };
 
@@ -232,9 +241,24 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     let alibaba_handle = tokio::task::spawn_blocking(alibaba::fetch);
     let glm_status = fetch_glm(zai_key, &glm_endpoint, now).await;
     let anthropic_status = fetch_anthropic(anthropic_key).await;
-    let alibaba_status = alibaba_handle
+    let alibaba_fetched = alibaba_handle
         .await
         .unwrap_or_else(|e| VendorStatus::failed(format!("bl task: {e}")));
+    // Keep the last good Bailian reading through a transient `bl` failure so one
+    // bad tick doesn't flip real quota data into a "couldn't read" card. Only a
+    // failure with nothing cached (first fetch, or a prolonged outage past
+    // ALIBABA_CACHE_MAX_SECS) reaches the UI as an error. A missing CLI
+    // (`configured == false`) is terminal — never serve stale data for it.
+    let (alibaba_status, alibaba_fresh_good, alibaba_clear_cache) = if alibaba_fetched.ok {
+        (alibaba_fetched.clone(), Some(alibaba_fetched), false)
+    } else if alibaba_fetched.configured {
+        match alibaba_cached {
+            Some(good) => (good, None, false),
+            None => (alibaba_fetched, None, false),
+        }
+    } else {
+        (alibaba_fetched, None, true)
+    };
     let (copilot_status, copilot_fresh_good, copilot_terminal, copilot_attempted) =
         resolve_copilot(copilot_token, copilot_cached, copilot_prev, copilot_due).await;
 
@@ -293,6 +317,16 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if copilot_attempted {
             guard.copilot_attempted_at = Some(now);
+        }
+        // Cache a fresh good Bailian reading so the next transient `bl` failure
+        // serves this instead of an error card; drop it when the CLI is gone so
+        // a stale reading can't outlive an uninstall / logout.
+        if let Some(good) = alibaba_fresh_good {
+            guard.alibaba_last_good = Some(good);
+            guard.alibaba_last_good_at = Some(now);
+        } else if alibaba_clear_cache {
+            guard.alibaba_last_good = None;
+            guard.alibaba_last_good_at = None;
         }
     }
 

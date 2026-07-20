@@ -122,13 +122,48 @@ export default function App() {
   if (!snapshot) {
     return (
       <main className="widget">
-        <div className="empty">
-          {error ? (
+        {error ? (
+          <div className="empty">
             <p className="err">Couldn’t read usage: {error}</p>
-          ) : (
-            <p>Scanning local logs…</p>
-          )}
-        </div>
+          </div>
+        ) : (
+          // First snapshot is still being assembled (local log scan + live
+          // provider fetches). Show a branded boot screen — spinning logo arc,
+          // the four provider dots pulsing in sequence, and shimmering
+          // placeholders for the stats about to land — instead of a bare line
+          // of text.
+          <div className="boot">
+            <span className="boot-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="7.5" stroke="oklch(36% 0.04 220)" strokeWidth="3" />
+                <circle
+                  className="boot-arc"
+                  cx="12" cy="12" r="7.5" fill="none"
+                  stroke="oklch(82% 0.13 200)" strokeWidth="3" strokeLinecap="round"
+                  strokeDasharray="12 35" pathLength="47"
+                />
+                <circle cx="12" cy="12" r="2.1" fill="oklch(82% 0.13 200)" />
+              </svg>
+            </span>
+            <h2 className="boot-title">Warming up</h2>
+            <p className="boot-sub">reading local logs · connecting to providers</p>
+            <div className="boot-provs" aria-hidden="true">
+              <span className="boot-dot claude" />
+              <span className="boot-dot glm" />
+              <span className="boot-dot copilot" />
+              <span className="boot-dot alibaba" />
+            </div>
+            <div className="boot-skel" aria-hidden="true">
+              <div className="skel-kpis">
+                <span className="sk" />
+                <span className="sk" />
+                <span className="sk" />
+              </div>
+              <span className="sk skel-line" />
+              <span className="sk skel-line short" />
+            </div>
+          </div>
+        )}
       </main>
     );
   }
@@ -799,13 +834,29 @@ function AlibabaOverview({
             </>
           )}
         </>
+      ) : vendor?.configured ? (
+        // The CLI is installed but this fetch failed and there's no recent
+        // reading to fall back on. The background loop keeps retrying, so show
+        // a calm "connecting" state instead of dumping the raw CLI error.
+        <div className="connect-card connecting">
+          <div className="connect-anim" aria-hidden="true">
+            <span className="ping" />
+            <span className="ping p2" />
+            <span className="core" />
+          </div>
+          <p className="connect-title">Connecting to Alibaba Cloud…</p>
+          <p className="connect-sub">
+            Reading your Bailian usage — this can take a moment. We&rsquo;ll keep
+            retrying in the background.
+          </p>
+          {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+          <button className="btn" onClick={onConnect}>
+            Setup guide →
+          </button>
+        </div>
       ) : (
         <div className="connect-card">
-          <p className="connect-title">
-            {vendor?.configured
-              ? `Couldn't read Bailian CLI${vendor.error ? `: ${vendor.error}` : ""}`
-              : "No Alibaba Cloud usage data yet"}
-          </p>
+          <p className="connect-title">No Alibaba Cloud usage data yet</p>
           <p className="connect-sub">
             Install the Bailian CLI (<code>npm i -g bailian-cli</code>) and run{" "}
             <code>bl auth login --console</code> to see token usage and quota.

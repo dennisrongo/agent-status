@@ -50,6 +50,30 @@ body {
 .empty { flex: 1; display: grid; place-items: center; color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
 .empty .err { color: var(--danger); }
 
+/* boot screen — shown while the first snapshot is assembled (log scan + live
+   provider fetches). A spinning brand arc, the four provider dots pulsing in
+   sequence, and shimmering stand-ins for the stats about to land. */
+.boot { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px 30px 34px; text-align: center; background: radial-gradient(120% 80% at 50% -10%, color-mix(in oklch, var(--accent) 6%, var(--panel)) 0%, var(--panel) 60%); }
+.boot-mark { width: 46px; height: 46px; display: block; margin-bottom: 17px; }
+.boot-mark svg { width: 100%; height: 100%; display: block; }
+.boot-arc { transform-box: fill-box; transform-origin: center; animation: spin 1.1s linear infinite; }
+.boot-title { font-size: 15.5px; font-weight: 700; letter-spacing: -0.015em; color: var(--fg); }
+.boot-sub { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-top: 6px; letter-spacing: -0.01em; }
+.boot-provs { display: flex; gap: 12px; margin: 20px 0 22px; }
+.boot-dot { width: 8px; height: 8px; border-radius: 50%; opacity: .22; animation: boot-pulse 1.3s ease-in-out infinite; }
+.boot-dot.claude { background: var(--claude); }
+.boot-dot.glm { background: var(--glm); animation-delay: .16s; }
+.boot-dot.copilot { background: var(--copilot); animation-delay: .32s; }
+.boot-dot.alibaba { background: var(--alibaba); animation-delay: .48s; }
+@keyframes boot-pulse { 0%, 100% { opacity: .22; transform: scale(.75); } 40% { opacity: 1; transform: scale(1.2); } }
+.boot-skel { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 10px; }
+.skel-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+.boot-skel .sk { border: 1px solid var(--border); background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 45%, var(--surface) 65%); background-size: 250% 100%; animation: shimmer 1.6s linear infinite; }
+.skel-kpis .sk { height: 58px; border-radius: 10px; }
+.skel-line { height: 10px; border-radius: 6px; }
+.skel-line.short { width: 72%; }
+@keyframes shimmer { from { background-position: 0 0; } to { background-position: -250% 0; } }
+
 /* header */
 .head { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--surface), var(--panel)); }
 .logo { width: 30px; height: 30px; border-radius: 8px; flex: none; display: grid; place-items: center; background: linear-gradient(135deg, oklch(40% 0.06 200), oklch(30% 0.03 250)); border: 1px solid var(--border-2); }
@@ -113,6 +137,18 @@ body {
 .reconnect-btn:disabled { opacity: .55; cursor: default; }
 .connect-err { font-size: 10.5px; line-height: 1.5; color: var(--danger); margin: 10px 0 0; }
 .connect-err code { font-family: var(--mono); font-size: 10px; color: var(--fg); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
+/* Transient "still connecting" state (Alibaba): a calm branded sonar ping in
+   place of the raw CLI error. Solid tinted border sets it apart from the
+   dashed "setup required" card. */
+.connect-card.connecting { border-style: solid; border-color: color-mix(in oklch, var(--alibaba) 35%, var(--border-2)); background: color-mix(in oklch, var(--alibaba) 6%, var(--surface)); }
+.connect-card.connecting .connect-title { color: var(--alibaba); }
+.connect-hint { font-family: var(--mono); font-size: 10px; line-height: 1.5; color: var(--faint); margin: 0 2px 12px; word-break: break-word; }
+.connect-anim { position: relative; width: 46px; height: 46px; margin: 2px auto 13px; display: grid; place-items: center; }
+.connect-anim .core { width: 10px; height: 10px; border-radius: 50%; background: var(--alibaba); box-shadow: 0 0 0 3px color-mix(in oklch, var(--alibaba) 20%, transparent); animation: core-breathe 1.8s ease-in-out infinite; }
+.connect-anim .ping { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid color-mix(in oklch, var(--alibaba) 55%, transparent); animation: ping 1.8s cubic-bezier(0, 0, .2, 1) infinite; }
+.connect-anim .ping.p2 { animation-delay: .9s; }
+@keyframes ping { 0% { transform: scale(.35); opacity: .9; } 80%, 100% { transform: scale(1); opacity: 0; } }
+@keyframes core-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(.8); } }
 .glm-kpis { grid-template-columns: 1fr; }
 
 /* KPIs */
