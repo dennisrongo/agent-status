@@ -101,6 +101,12 @@ export interface VendorStatus {
   primary: string;
   secondary: string;
   detail: VendorKeyVal[];
+  /** The failure is a stale/missing login specifically (e.g. the Bailian
+   * console session expired even though `bl auth status` still reports
+   * `authenticated`). Discovered only by attempting a usage call, so this is
+   * the authoritative signal — both Overview and Settings read it off the
+   * snapshot. A transient/network `ok:false` leaves this `false`. */
+  authExpired: boolean;
 }
 
 export interface VendorReport {

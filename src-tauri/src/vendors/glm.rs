@@ -220,6 +220,7 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
         primary: format!("{:.0}% used", used.clamp(0.0, 100.0)),
         secondary: label.to_string(),
         detail,
+        auth_expired: false,
     }
 }
 
@@ -231,6 +232,7 @@ fn shape_error(msg: &str) -> VendorStatus {
         primary: "—".to_string(),
         secondary: "unexpected shape".to_string(),
         detail: Vec::new(),
+        auth_expired: false,
     }
 }
 

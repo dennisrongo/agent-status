@@ -68,6 +68,13 @@ pub struct VendorStatus {
     pub secondary: String,
     /// Extra labelled rows.
     pub detail: Vec<KeyVal>,
+    /// Whether the failure is specifically a stale/missing login (e.g. the
+    /// Bailian console session expired even though `bl auth status` still
+    /// reports `authenticated`, because a separate API key is present).
+    /// `fetch()` only discovers this by attempting a usage call, so it's the
+    /// authoritative signal — both the Overview and Settings read it off the
+    /// snapshot. A transient/network `ok:false` leaves this `false`.
+    pub auth_expired: bool,
 }
 
 impl VendorStatus {
@@ -79,6 +86,7 @@ impl VendorStatus {
             primary: "—".to_string(),
             secondary: "no key set".to_string(),
             detail: Vec::new(),
+            auth_expired: false,
         }
     }
 
@@ -90,6 +98,7 @@ impl VendorStatus {
             primary: "—".to_string(),
             secondary: "fetch failed".to_string(),
             detail: Vec::new(),
+            auth_expired: false,
         }
     }
 }

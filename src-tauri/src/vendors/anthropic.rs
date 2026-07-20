@@ -65,6 +65,7 @@ pub fn parse_cost(v: &Value) -> VendorStatus {
             primary: "—".to_string(),
             secondary: "unexpected shape".to_string(),
             detail: Vec::new(),
+            auth_expired: false,
         };
     };
 
@@ -90,6 +91,7 @@ pub fn parse_cost(v: &Value) -> VendorStatus {
         primary: format!("${:.2}", total),
         secondary: format!("7-day org cost ({currency})"),
         detail: vec![KeyVal::text("Reported spend", format!("${:.2}", total))],
+        auth_expired: false,
     }
 }
 

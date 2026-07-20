@@ -231,14 +231,36 @@ pub fn install() -> Result<String, String> {
 /// Run `bl usage summary`, `bl usage stats --days 1`, `bl usage free`,
 /// `bl quota check`, and the Token Plan usage API (all `--output json`),
 /// then merge into a single VendorStatus. Called from a blocking task.
+///
+/// Auth detection: every usage command needs a valid *console* session, which
+/// is a separate credential from the API key `bl auth status` reports. The
+/// session can expire (or never have been logged in) while `auth_status()`
+/// still says `authenticated: true`. Since only a usage call discovers this,
+/// `fetch()` is the authority — when the first command fails with the
+/// console-expired error we short-circuit to a terminal `auth_expired` status
+/// (no point running the other four). A transient/network failure on any
+/// command stays a normal `failed()`.
 pub fn fetch() -> VendorStatus {
     let Some(cli) = find_cli() else {
         return VendorStatus::not_configured();
     };
     let summary = run_bl(&cli, &["usage", "summary", "--output", "json"]);
+    // The console-session-expired error is identical across all five commands
+    // (code 3) — detect it on the first one and stop, rather than paying for
+    // four more doomed subprocesses.
+    if let Err(e) = &summary {
+        if e.is_console_expired() {
+            return expired_status(e);
+        }
+    }
     // "Today" window — best-effort; the 7-day summary still works without it.
     let today = run_bl(&cli, &["usage", "stats", "--days", "1", "--output", "json"]).ok();
     let free = run_bl(&cli, &["usage", "free", "--output", "json"]);
+    if let Err(e) = &free {
+        if e.is_console_expired() {
+            return expired_status(e);
+        }
+    }
     // Rate-limit headroom is best-effort — a failure here shouldn't blank the
     // whole card when the usage commands succeeded.
     let quota = run_bl(&cli, &["quota", "check", "--output", "json"]).ok();
@@ -257,34 +279,107 @@ pub fn fetch() -> VendorStatus {
     }
 }
 
-fn run_bl(cli: &std::path::Path, args: &[&str]) -> Result<Value, String> {
+/// Structured error from a `bl` invocation: the CLI's JSON
+/// `{ "error": { code, message, hint } }` (it writes this to **stderr**, not
+/// stdout, on a non-zero exit), or a spawn/parse failure. Carrying the parsed
+/// fields lets `fetch()` distinguish a console-session expiry — which is
+/// terminal until `bl auth login --console` re-authenticates — from a
+/// transient network blip, instead of treating every failure the same.
+struct BlError {
+    code: Option<i64>,
+    message: String,
+    hint: Option<String>,
+}
+
+impl BlError {
+    /// Whether this is the "console session expired / not logged in" auth
+    /// failure. Code 3 is the CLI's credential error; the message match is a
+    /// backstop in case a future CLI build changes the code. `bl auth status`
+    /// can't see this state on its own — it still reports `authenticated:
+    /// true` as long as a separate API key is present — so only a usage call
+    /// discovers it.
+    fn is_console_expired(&self) -> bool {
+        self.code == Some(3)
+            || self
+                .message
+                .contains("Console session is not logged in or has expired")
+    }
+}
+
+impl std::fmt::Display for BlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hint = self.hint.as_deref().filter(|h| !h.is_empty());
+        match (self.code, hint) {
+            (Some(c), Some(h)) => write!(f, "exit code {c}: {} ({h})", self.message),
+            (Some(c), None) => write!(f, "exit code {c}: {}", self.message),
+            (None, Some(h)) => write!(f, "{} ({h})", self.message),
+            (None, None) => write!(f, "{}", self.message),
+        }
+    }
+}
+
+/// Parse the CLI's structured error JSON (`{ "error": { code, message, hint } }`)
+/// into a `BlError`, if present. Pure — exercised by tests without shelling out.
+/// Accepts both the wrapped (`{ "error": { ... } }`) and flat (`{ "code", ... }`)
+/// shapes a CLI build might emit.
+fn parse_bl_error(json: &str) -> Option<BlError> {
+    let v = serde_json::from_str::<Value>(json).ok()?;
+    let err = v.get("error").unwrap_or(&v);
+    let message = err.get("message").and_then(|m| m.as_str())?.to_string();
+    Some(BlError {
+        code: err.get("code").and_then(|c| c.as_i64()),
+        message,
+        hint: err.get("hint").and_then(|h| h.as_str()).map(|h| h.to_string()),
+    })
+}
+
+fn run_bl(cli: &std::path::Path, args: &[&str]) -> Result<Value, BlError> {
     let out = bl_command(cli)
         .args(args)
         .output()
-        .map_err(|e| format!("spawn: {e}"))?;
+        .map_err(|e| BlError { code: None, message: format!("spawn: {e}"), hint: None })?;
 
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        // The CLI writes structured JSON errors to stdout even on failure.
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let hint = if let Ok(v) = serde_json::from_str::<Value>(&stdout) {
-            v.get("error")
-                .and_then(|e| e.get("hint"))
-                .and_then(|h| h.as_str())
-                .map(|h| format!(" ({h})"))
-                .unwrap_or_default()
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // The CLI writes structured JSON errors to stderr (and sometimes
+        // stdout) even on a non-zero exit — parse whichever has it so we keep
+        // the hint and the machine-readable code.
+        if let Some(e) = parse_bl_error(&stdout).or_else(|| parse_bl_error(&stderr)) {
+            return Err(BlError {
+                code: e.code.or_else(|| out.status.code().map(|c| c as i64)),
+                ..e
+            });
+        }
+        let raw = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
         } else {
-            String::new()
+            stdout.trim().to_string()
         };
-        return Err(format!(
-            "exit {}{hint}: {}",
-            out.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
+        return Err(BlError {
+            code: out.status.code().map(|c| c as i64),
+            message: raw,
+            hint: None,
+        });
     }
 
     serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-        .map_err(|e| format!("invalid JSON: {e}"))
+        .map_err(|e| BlError { code: None, message: format!("invalid JSON: {e}"), hint: None })
+}
+
+/// Build the terminal "console session expired" status. The CLI's hint (the
+/// `Run \`bl auth login --console\` …` line) is the actionable part — surface
+/// it verbatim in `error` so the Overview and Settings can show it.
+fn expired_status(e: &BlError) -> VendorStatus {
+    VendorStatus {
+        configured: true,
+        ok: false,
+        error: e.hint.clone().or_else(|| Some(e.to_string())),
+        primary: "—".to_string(),
+        secondary: "session expired".to_string(),
+        detail: Vec::new(),
+        auth_expired: true,
+    }
 }
 
 /// Snapshot of one time window's headline numbers.
@@ -512,6 +607,7 @@ pub fn parse(
             primary: "0".to_string(),
             secondary: format!("no usage · {period_label}"),
             detail: Vec::new(),
+            auth_expired: false,
         };
     }
 
@@ -536,6 +632,7 @@ pub fn parse(
         primary,
         secondary: period_label,
         detail,
+        auth_expired: false,
     }
 }
 
@@ -585,6 +682,51 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc::now()
+    }
+
+    #[test]
+    fn parses_console_expired_error() {
+        // The exact JSON the CLI writes to stderr when the console session has
+        // expired — verbatim from a real `bl usage summary` exit-code-3 run.
+        let json = r#"{
+            "error": {
+                "code": 3,
+                "message": "Console session is not logged in or has expired.",
+                "hint": "Run `bl auth login --console` to sign in or refresh your console session."
+            }
+        }"#;
+        let e = parse_bl_error(json).expect("error JSON should parse");
+        assert_eq!(e.code, Some(3));
+        assert!(e.is_console_expired());
+        let s = expired_status(&e);
+        assert!(!s.ok);
+        assert!(s.configured);
+        assert!(s.auth_expired);
+        assert_eq!(s.secondary, "session expired");
+        // The hint is the actionable line — surface it verbatim.
+        assert!(s.error.unwrap().contains("bl auth login --console"));
+    }
+
+    #[test]
+    fn console_expired_detection_ignores_transient_errors() {
+        // A rate-limit / network failure isn't the console-expiry error and
+        // must not flip auth_expired — that would turn a transient blip into a
+        // false "sign in again" prompt.
+        let e = parse_bl_error(r#"{ "error": { "code": 429, "message": "Too Many Requests" } }"#)
+            .expect("error JSON should parse");
+        assert_eq!(e.code, Some(429));
+        assert!(!e.is_console_expired());
+        // Falls back to message-only display when there's no hint.
+        assert_eq!(e.to_string(), "exit code 429: Too Many Requests");
+    }
+
+    #[test]
+    fn parse_bl_error_handles_flat_shape() {
+        // A CLI build could emit the error fields at the top level instead of
+        // nested under "error" — accept that shape too.
+        let e = parse_bl_error(r#"{ "code": 3, "message": "Console session is not logged in or has expired." }"#)
+            .expect("flat error JSON should parse");
+        assert!(e.is_console_expired());
     }
 
     #[test]

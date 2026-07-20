@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider, WindowMode } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
 interface Props {
   settings: SettingsView;
@@ -36,6 +36,10 @@ interface Props {
   loginBailian: () => Promise<string | null>;
   bailianLoginBusy: boolean;
   bailianLoginError: string | null;
+  /** Authoritative Alibaba status from the usage fetch — reflects the real
+   * connection state (incl. a console session that `bl auth status` can't see
+   * as expired). Falls back to `bailianStatus()` before the first snapshot. */
+  alibabaVendorStatus?: VendorStatus;
   keyError: string | null;
 }
 
@@ -81,6 +85,7 @@ export function Settings({
   loginBailian,
   bailianLoginBusy,
   bailianLoginError,
+  alibabaVendorStatus,
   keyError,
 }: Props) {
   return (
@@ -274,6 +279,7 @@ export function Settings({
         login={loginBailian}
         loginBusy={bailianLoginBusy}
         loginError={bailianLoginError}
+        vendorStatus={alibabaVendorStatus}
       />
 
       {keyError && <p className="key-err">{keyError}</p>}
@@ -707,6 +713,7 @@ function BailianCli({
   login,
   loginBusy,
   loginError,
+  vendorStatus,
 }: {
   status: () => Promise<BailianCliStatus | null>;
   install: () => Promise<string | null>;
@@ -715,6 +722,12 @@ function BailianCli({
   login: () => Promise<string | null>;
   loginBusy: boolean;
   loginError: string | null;
+  /** Authoritative Alibaba status from the usage fetch. `bl auth status` only
+   * reports whether *some* credential is present — it can't see that the
+   * console session has expired while a separate API key is still on file, so
+   * only a usage call discovers that. When a snapshot is available it wins;
+   * before the first collect arrives we fall back to `bl auth status`. */
+  vendorStatus?: VendorStatus;
 }) {
   const [cli, setCli] = useState<BailianCliStatus | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -758,6 +771,15 @@ function BailianCli({
     );
   }
 
+  // The snapshot (from a usage fetch) is the authority for connected/expired —
+  // `bl auth status` says `authenticated: true` as long as any credential is
+  // present, which hides a stale console session. Fall back to it only before
+  // the first collect arrives.
+  const expired = vendorStatus?.authExpired ?? false;
+  const connected = vendorStatus
+    ? vendorStatus.ok && !expired
+    : (cli?.authenticated ?? false);
+
   // Not installed → show install button.
   if (!cli?.installed) {
     return (
@@ -779,17 +801,20 @@ function BailianCli({
     );
   }
 
-  // Installed but not authenticated → show login button.
-  if (!cli.authenticated) {
+  // Installed but not usable: either no credential at all, or the console
+  // session expired (which `bl auth status` can't see). Both need the same fix
+  // — `bl auth login --console` — so they share the sign-in affordance.
+  if (!connected) {
     return (
       <div className="key-row">
         <div className="key-top">
           <span className="key-label">Bailian CLI (<code>bl</code>)</span>
-          <span className="key-status">○ not authenticated</span>
+          <span className="key-status">{expired ? "○ session expired" : "○ not authenticated"}</span>
         </div>
         <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-          Installed. Sign in to connect your Alibaba Cloud account — a browser
-          window will open to complete the login.
+          {expired
+            ? "Your Alibaba Cloud console session has expired. Sign in again to refresh it — a browser window will open to complete the login."
+            : "Installed. Sign in to connect your Alibaba Cloud account — a browser window will open to complete the login."}
         </span>
         <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
           {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
@@ -808,7 +833,7 @@ function BailianCli({
         <span className="key-status set">● connected</span>
       </div>
       <span className="connect-sub" style={{ margin: "0 0 6px" }}>
-        {cli.authHint ?? "Authenticated via Bailian CLI."}
+        {cli?.authHint ?? "Authenticated via Bailian CLI."}
       </span>
     </div>
   );

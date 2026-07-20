@@ -532,6 +532,7 @@ export default function App() {
             loginBailian={loginBailian}
             bailianLoginBusy={bailianLoginBusy}
             bailianLoginError={bailianLoginError}
+            alibabaVendorStatus={snapshot?.vendor?.alibaba}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -834,6 +835,23 @@ function AlibabaOverview({
             </>
           )}
         </>
+      ) : vendor?.authExpired ? (
+        // The CLI is installed and `bl auth status` reports a credential, but
+        // the *console session* has expired — usage calls fail with code 3.
+        // This is terminal (retrying won't help until the user re-logs-in), so
+        // show a reconnect card instead of the indefinite "Connecting…"
+        // spinner. Mirrors ClaudeConnectPrompt's expired branch.
+        <div className="connect-card warn">
+          <p className="connect-title">Alibaba Cloud session expired</p>
+          <p className="connect-sub">
+            The Bailian CLI&rsquo;s console session has expired. Sign in again to
+            restore your usage and quota.
+          </p>
+          {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+          <button className="btn primary" onClick={onConnect}>
+            Sign in to Alibaba Cloud
+          </button>
+        </div>
       ) : vendor?.configured ? (
         // The CLI is installed but this fetch failed and there's no recent
         // reading to fall back on. The background loop keeps retrying, so show

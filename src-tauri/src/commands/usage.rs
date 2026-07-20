@@ -289,6 +289,16 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                     h.await.unwrap_or_else(|e| VendorStatus::failed(format!("bl task: {e}")));
                 if fetched.ok {
                     (fetched.clone(), Some(fetched), false, true)
+                } else if fetched.auth_expired {
+                    // The console session is gone — `bl auth status` still says
+                    // authenticated (a separate API key is present) but no usage
+                    // command can succeed until `bl auth login --console`. This is
+                    // terminal, not transient: drop the stale `last_good` cache so
+                    // the Overview/Settings show the real "session expired" state
+                    // instead of serving old "connected" data, and stamp the
+                    // throttle so we don't pay for five doomed `bl` subprocesses
+                    // on every collect tick until the user re-logs-in.
+                    (fetched, None, true, true)
                 } else if fetched.configured {
                     match alibaba_cached {
                         Some(good) => (good, None, false, true),

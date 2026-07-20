@@ -199,6 +199,7 @@ pub fn parse(v: &Value) -> VendorStatus {
             primary: "unlimited".to_string(),
             secondary,
             detail,
+            auth_expired: false,
         };
     }
 
@@ -259,6 +260,7 @@ pub fn parse(v: &Value) -> VendorStatus {
         primary: format!("{:.0}% used", used_pct),
         secondary,
         detail,
+        auth_expired: false,
     }
 }
 
@@ -538,6 +540,7 @@ fn shape_error(msg: &str) -> VendorStatus {
         primary: "—".to_string(),
         secondary: "unexpected shape".to_string(),
         detail: Vec::new(),
+        auth_expired: false,
     }
 }
 
