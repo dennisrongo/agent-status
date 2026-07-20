@@ -161,18 +161,43 @@ pub fn parse(v: &Value) -> VendorStatus {
     let unlimited = snap.get("unlimited").and_then(|u| u.as_bool()).unwrap_or(false);
 
     let mut detail = vec![KeyVal::text("Plan", plan.clone())];
+    if let Some(org) = seat_org(v) {
+        detail.push(KeyVal::text("Organization", org));
+    }
+    if let Some(since) = member_since(v) {
+        detail.push(KeyVal::text("Member since", since));
+    }
 
     if unlimited {
+        // Business/Enterprise seats are typically unlimited across every quota
+        // category. Show each one so the card reads as a real account summary
+        // rather than a bare "unlimited" — and so the rows light up with real
+        // numbers automatically if the org ever switches to metered billing.
+        let snapshots = v.get("quota_snapshots");
+        for (key, label) in [("chat", "Chat"), ("completions", "Completions")] {
+            if snapshots.and_then(|q| q.get(key)).is_some() {
+                detail.push(KeyVal::text(label, "unlimited"));
+            }
+        }
         detail.push(KeyVal::text("Premium requests", "unlimited"));
+        if let Some(caps) = capabilities(v) {
+            detail.push(KeyVal::text("Capabilities", caps));
+        }
         if let Some(r) = &reset {
             detail.push(KeyVal::text("Resets", r.clone()));
         }
+        // "seat" is tied to org presence — individual plans have no org, so we
+        // keep the legacy phrasing for them.
+        let secondary = match seat_org(v) {
+            Some(org) => format!("{plan} seat · {org}"),
+            None => format!("{plan} · premium requests"),
+        };
         return VendorStatus {
             configured: true,
             ok: true,
             error: None,
             primary: "unlimited".to_string(),
-            secondary: format!("{plan} · premium requests"),
+            secondary,
             detail,
         };
     }
@@ -560,6 +585,59 @@ fn fmt_count(n: f64) -> String {
     }
 }
 
+/// The seat-providing org's canonical handle, e.g. `"CodeStackSJ"`. Prefers the
+/// login (always present, recognizable) over the display name (frequently
+/// unset), and reads the richer `organization_list` before the bare
+/// `organization_login_list` fallback. `None` for individual plans.
+fn seat_org(v: &Value) -> Option<String> {
+    let by_login = |o: &Value| o.get("login").and_then(|s| s.as_str()).map(str::to_string);
+    let by_name = |o: &Value| o.get("name").and_then(|s| s.as_str()).map(str::to_string);
+
+    if let Some(orgs) = v.get("organization_list").and_then(|o| o.as_array()) {
+        if let Some(first) = orgs.first() {
+            // Login is canonical; display name is a last resort (often empty).
+            return by_login(first).or_else(|| by_name(first));
+        }
+    }
+    v.get("organization_login_list")
+        .and_then(|l| l.as_array())
+        .and_then(|a| a.first())
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+}
+
+/// The seat assignment date as `YYYY-MM-DD`, e.g. `assigned_date`
+/// `"2023-09-07T13:15:02-07:00"` -> `"2023-09-07"`. `None` when the field is
+/// absent (older responses).
+fn member_since(v: &Value) -> Option<String> {
+    v.get("assigned_date")
+        .and_then(|d| d.as_str())
+        .map(short_date)
+}
+
+/// Enabled add-on capabilities joined with `" · "`, e.g. `"MCP · CLI · Copilot
+/// app"`. Returns `None` when nothing is enabled so the row is omitted rather
+/// than rendered empty. The join glyph mirrors the rest of the card
+/// (`"{plan} · premium requests"`).
+fn capabilities(v: &Value) -> Option<String> {
+    let flag = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+    let mut caps: Vec<&str> = Vec::new();
+    if flag("is_mcp_enabled") {
+        caps.push("MCP");
+    }
+    if flag("cli_enabled") {
+        caps.push("CLI");
+    }
+    if flag("copilot_app_enabled") {
+        caps.push("Copilot app");
+    }
+    if caps.is_empty() {
+        None
+    } else {
+        Some(caps.join(" · "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,11 +685,22 @@ mod tests {
 
     #[test]
     fn parses_unlimited_business_plan() {
-        // Mirrors the live shape observed for a Business seat: unlimited quota.
+        // Mirrors the live shape observed for a Business seat: unlimited quota
+        // across every category, plus the org / member-since / capability
+        // metadata the enriched card surfaces.
         let v = json!({
             "copilot_plan": "business",
+            "access_type_sku": "copilot_for_business_seat_quota",
+            "assigned_date": "2023-09-07T13:15:02-07:00",
+            "organization_login_list": ["CodeStackSJ"],
+            "organization_list": [{ "login": "CodeStackSJ", "name": "CodeStack" }],
+            "is_mcp_enabled": false,
+            "cli_enabled": true,
+            "copilot_app_enabled": true,
             "quota_reset_date_utc": "2026-07-01T00:00:00Z",
             "quota_snapshots": {
+                "chat": { "unlimited": true, "credits_used": 0 },
+                "completions": { "unlimited": true, "credits_used": 0 },
                 "premium_interactions": {
                     "entitlement": 0, "remaining": 0,
                     "percent_remaining": 100.0, "unlimited": true,
@@ -622,9 +711,84 @@ mod tests {
         let s = parse(&v);
         assert!(s.ok);
         assert_eq!(s.primary, "unlimited");
-        assert!(s.secondary.starts_with("Business"));
-        assert!(s.detail.iter().any(|d| d.value == "unlimited"));
+        assert_eq!(s.secondary, "Business seat · CodeStackSJ");
+        // Plan + org + member-since + three quota rows + caps + resets.
+        assert!(s.detail.iter().any(|d| d.label == "Plan" && d.value == "Business"));
+        assert!(s.detail.iter().any(|d| d.label == "Organization" && d.value == "CodeStackSJ"));
+        assert!(s.detail.iter().any(|d| d.label == "Member since" && d.value == "2023-09-07"));
+        // Every quota category renders as an unlimited row.
+        assert_eq!(
+            s.detail.iter().filter(|d| d.value == "unlimited").count(),
+            3,
+            "chat, completions, and premium requests should each be unlimited"
+        );
+        assert!(s.detail.iter().any(|d| d.label == "Chat" && d.value == "unlimited"));
+        assert!(s.detail.iter().any(|d| d.label == "Completions" && d.value == "unlimited"));
+        assert!(s.detail.iter().any(|d| d.label == "Premium requests" && d.value == "unlimited"));
+        // MCP is off, so it's omitted from the caps row.
+        assert!(s.detail.iter().any(|d| d.label == "Capabilities" && d.value == "CLI · Copilot app"));
         assert!(s.detail.iter().any(|d| d.label == "Resets" && d.value == "2026-07-01"));
+    }
+
+    #[test]
+    fn unlimited_omits_optional_rows_when_absent() {
+        // A minimal response (no org, no assigned_date, no chat/completions, no
+        // caps) must render exactly the legacy rows and fall back to the legacy
+        // secondary — backward compat for responses that predate the richer
+        // fields, or for individual Pro seats with nothing extra.
+        let v = json!({
+            "copilot_plan": "individual",
+            "quota_snapshots": {
+                "premium_interactions": { "unlimited": true, "percent_remaining": 100.0 }
+            }
+        });
+        let s = parse(&v);
+        assert!(s.ok);
+        assert_eq!(s.primary, "unlimited");
+        assert_eq!(s.secondary, "Individual · premium requests");
+        // Only Plan + Premium requests; no org/member-since/caps/chat/completions.
+        assert!(s.detail.iter().all(|d| d.label == "Plan" || d.label == "Premium requests"));
+        assert_eq!(s.detail.iter().filter(|d| d.value == "unlimited").count(), 1);
+    }
+
+    #[test]
+    fn unlimited_lists_all_capabilities() {
+        let v = json!({
+            "copilot_plan": "enterprise",
+            "organization_list": [{ "login": "mycorp" }],
+            "is_mcp_enabled": true,
+            "cli_enabled": true,
+            "copilot_app_enabled": true,
+            "quota_snapshots": { "premium_interactions": { "unlimited": true } }
+        });
+        let s = parse(&v);
+        assert!(s.ok);
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Capabilities" && d.value == "MCP · CLI · Copilot app"));
+    }
+
+    #[test]
+    fn finite_includes_org_row() {
+        // A finite Pro seat with an org should show the org alongside the meter.
+        let v = json!({
+            "copilot_plan": "individual_pro",
+            "assigned_date": "2024-01-15T00:00:00Z",
+            "organization_login_list": ["acme"],
+            "quota_snapshots": { "premium_interactions": {
+                "entitlement": 1500, "remaining": 1327,
+                "percent_remaining": 88.5, "unlimited": false
+            }}
+        });
+        let s = parse(&v);
+        assert!(s.ok);
+        assert!(s.detail.iter().any(|d| d.label == "Organization" && d.value == "acme"));
+        assert!(s.detail.iter().any(|d| d.label == "Member since" && d.value == "2024-01-15"));
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Premium requests" && d.pct == Some(11.5)));
     }
 
     #[test]
