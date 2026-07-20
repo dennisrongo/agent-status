@@ -677,6 +677,14 @@ pub fn set_window_mode(
     }
     let updated = update_settings(&state, |s| s.window_mode = mode)?;
     settings::save(&app, &updated).into_string()?;
+    // Reposition an already-open window to its new anchor immediately so
+    // switching to dock snaps to the taskbar corner without a follow-up tray
+    // click. Hidden windows pick up the new mode the next time they're opened.
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            crate::tray::apply_mode_placement(&app, &window);
+        }
+    }
     Ok((&updated).into())
 }
 

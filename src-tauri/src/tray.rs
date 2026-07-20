@@ -199,6 +199,24 @@ fn restore_float_position(app: &AppHandle, window: &WebviewWindow) {
     // on a visible display by default.
 }
 
+/// Re-apply the current mode's placement to an already-visible window. Called
+/// when the user switches modes in Settings while the dropdown is open, so the
+/// window snaps to its new anchor immediately (dock → taskbar corner, float →
+/// last dragged spot) instead of waiting for the next tray click to reposition
+/// it. Mirrors the show path in `toggle_window`, minus the show/focus.
+pub(crate) fn apply_mode_placement(app: &AppHandle, window: &WebviewWindow) {
+    let floating = app
+        .state::<std::sync::Mutex<AppState>>()
+        .lock()
+        .map(|g| g.settings.window_mode == "float")
+        .unwrap_or(false);
+    if floating {
+        restore_float_position(app, window);
+    } else {
+        place_at_work_area_corner(window);
+    }
+}
+
 /// Place the dropdown/popover relative to the tray icon. The anchor differs by
 /// platform because the tray lives in opposite corners (macOS menu bar at the
 /// top, Windows taskbar at the bottom), so the body is split into two
@@ -217,6 +235,27 @@ fn position_dropdown(window: &WebviewWindow, tray_rect: Option<Rect>) {
     let pos = rect.position.to_physical::<f64>(1.0);
     let size = rect.size.to_physical::<f64>(1.0);
     place_window(window, pos.x, pos.y, size.width, size.height);
+}
+
+/// Reposition the window to its docked anchor without a tray-rect — used when
+/// switching to dock mode mid-session (no tray click carries geometry). Falls
+/// back to the positioner plugin's cached tray location when no monitor can be
+/// resolved, matching `position_dropdown`'s `None`-rect branch.
+fn place_at_work_area_corner(window: &WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        let monitor = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| window.primary_monitor().ok().flatten());
+        if let Some(monitor) = monitor {
+            pin_bottom_right(window, &monitor);
+            return;
+        }
+    }
+    // macOS or no monitor resolved: defer to the positioner's cached tray spot.
+    let _ = window.move_window_constrained(Position::TrayCenter);
 }
 
 /// macOS: hang the window directly off the menu-bar icon — top edge just below
