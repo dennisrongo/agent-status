@@ -18,6 +18,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
+use crate::process_util::SilentCommand;
 use super::{short_date, KeyVal, VendorStatus};
 
 const ENDPOINT: &str = "https://api.github.com/copilot_internal/user";
@@ -349,6 +350,7 @@ fn is_github_host(key: &str) -> bool {
 fn gh_cli_token() -> Option<String> {
     let out = std::process::Command::new("gh")
         .args(["auth", "token"])
+        .silent()
         .output()
         .ok()?;
     if !out.status.success() {

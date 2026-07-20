@@ -2,6 +2,7 @@ pub mod commands;
 pub mod encryption;
 pub mod error;
 pub mod paths;
+pub mod process_util;
 pub mod scanner;
 pub mod settings;
 pub mod state;

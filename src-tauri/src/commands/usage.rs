@@ -7,6 +7,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::encryption::{self, EncryptedSecret};
 use crate::error::ResultExt;
+use crate::process_util::SilentCommand;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
@@ -751,7 +752,7 @@ pub fn open_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");
-        c.arg(&url);
+        c.arg(&url).silent();
         c
     };
     #[cfg(target_os = "windows")]
@@ -759,15 +760,16 @@ pub fn open_url(url: String) -> Result<(), String> {
         // Hand the URL to the shell's protocol handler directly. NOT `cmd /C
         // start`, whose builtin re-interprets &, |, ^, <, >, %, () — rundll32
         // receives the URL as a single argv item, so query strings (`?a=1&b=2`)
-        // pass through verbatim.
+        // pass through verbatim. `silent()` adds CREATE_NO_WINDOW so the helper
+        // doesn't flash a console.
         let mut c = std::process::Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler").arg(&url);
+        c.arg("url.dll,FileProtocolHandler").arg(&url).silent();
         c
     };
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let mut cmd = {
         let mut c = std::process::Command::new("xdg-open");
-        c.arg(&url);
+        c.arg(&url).silent();
         c
     };
     cmd.spawn().map(drop).map_err(|e| e.to_string())

@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
 
+use crate::process_util::SilentCommand;
 use super::{KeyVal, VendorStatus};
 
 /// Cached npm global prefix — the `npm config get prefix` subprocess is
@@ -24,6 +25,7 @@ fn npm_global_prefix() -> Option<PathBuf> {
         .get_or_init(|| {
             let out = std::process::Command::new("npm")
                 .args(["config", "get", "prefix"])
+                .silent()
                 .output()
                 .ok()?;
             if !out.status.success() {
@@ -100,18 +102,22 @@ pub fn cli_on_path() -> bool {
 
 /// Build a Command for the Bailian CLI, handling Windows .cmd wrappers.
 /// On Windows, npm global binaries are .cmd shims that CreateProcess can't
-/// execute directly — they must go through cmd.exe /C.
+/// execute directly — they must go through cmd.exe /C. `.silent()` suppresses
+/// the console window on every `bl` invocation (auth status, login, and the
+/// usage fetches that fire on every refresh tick).
 fn bl_command(cli: &std::path::Path) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
         let ext = cli.extension().and_then(|e| e.to_str()).unwrap_or("");
         if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
             let mut cmd = std::process::Command::new("cmd");
-            cmd.arg("/C").arg(cli);
+            cmd.arg("/C").arg(cli).silent();
             return cmd;
         }
     }
-    std::process::Command::new(cli)
+    let mut cmd = std::process::Command::new(cli);
+    cmd.silent();
+    cmd
 }
 
 /// What the Settings UI shows about the Bailian CLI: installed? authenticated?
@@ -193,6 +199,7 @@ pub fn install() -> Result<String, String> {
     // Verify npm is available first.
     let npm_ok = std::process::Command::new("npm")
         .arg("--version")
+        .silent()
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -204,6 +211,7 @@ pub fn install() -> Result<String, String> {
 
     let out = std::process::Command::new("npm")
         .args(["install", "-g", "bailian-cli"])
+        .silent()
         .output()
         .map_err(|e| format!("npm spawn failed: {e}"))?;
 
