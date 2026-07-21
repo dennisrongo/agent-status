@@ -389,6 +389,9 @@ export default function App() {
                 vendor={snapshot.vendor?.alibaba}
                 minimal={minimal}
                 onConnect={() => setTab("settings")}
+                onLogin={() => void loginBailian()}
+                loginBusy={bailianLoginBusy}
+                loginError={bailianLoginError}
               />
             )}
           </section>
@@ -774,10 +777,16 @@ function AlibabaOverview({
   vendor,
   minimal,
   onConnect,
+  onLogin,
+  loginBusy,
+  loginError,
 }: {
   vendor: VendorStatus | undefined;
   minimal: boolean;
   onConnect: () => void;
+  onLogin: () => void;
+  loginBusy: boolean;
+  loginError: string | null;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
   const all = vendor?.detail ?? [];
@@ -848,9 +857,10 @@ function AlibabaOverview({
             restore your usage and quota.
           </p>
           {vendor.error && <p className="connect-hint">{vendor.error}</p>}
-          <button className="btn primary" onClick={onConnect}>
-            Sign in to Alibaba Cloud
+          <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+            {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
           </button>
+          {loginError && <p className="key-err">{loginError}</p>}
         </div>
       ) : vendor?.configured ? (
         // The CLI is installed but this fetch failed and there's no recent

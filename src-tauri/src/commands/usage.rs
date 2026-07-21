@@ -531,9 +531,34 @@ pub async fn claude_login_finish(app: AppHandle, code: String) -> Result<UsageSn
 
     clear_pending_claude_login(&app)?;
     clear_claude_throttle(&app)?;
-    let snapshot = collect(&app).await?;
-    let _ = app.emit("usage-updated", &snapshot);
-    Ok(snapshot)
+
+    // Return immediately with the current snapshot patched to reflect the new
+    // login so the UI flips to "connected" without waiting for the full collect
+    // (which can take 15-20 s when the Alibaba CLI's five sequential
+    // subprocesses are involved).  The background collect broadcasts fresh
+    // usage data via `usage-updated` when it finishes.
+    let patched = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.snapshot.clone().map(|mut s| {
+            if let Some(ref mut det) = s.detection {
+                det.claude_signed_in = true;
+                det.claude_expired = false;
+            }
+            s
+        })
+    };
+    spawn_collect_and_broadcast(&app);
+    match patched {
+        Some(s) => Ok(s),
+        // No snapshot yet (startup collect hasn't finished) — fall back to
+        // an inline collect so the caller still gets a valid response.
+        None => {
+            let s = collect(&app).await?;
+            let _ = app.emit("usage-updated", &s);
+            Ok(s)
+        }
+    }
 }
 
 /// Abandon an in-progress in-app Claude login, forgetting the PKCE secrets.
@@ -574,9 +599,30 @@ pub async fn claude_sign_out(app: AppHandle) -> Result<UsageSnapshot, String> {
         .map_err(|e| e.to_string())??;
     clear_pending_claude_login(&app)?;
     clear_claude_throttle(&app)?;
-    let snapshot = collect(&app).await?;
-    let _ = app.emit("usage-updated", &snapshot);
-    Ok(snapshot)
+
+    // Return immediately with the current snapshot patched to reflect the
+    // sign-out so the UI flips to "not connected" without waiting for the full
+    // collect.  The background collect broadcasts fresh data when it finishes.
+    let patched = {
+        let state = app.state::<Mutex<AppState>>();
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        guard.snapshot.clone().map(|mut s| {
+            if let Some(ref mut det) = s.detection {
+                det.claude_signed_in = false;
+                det.claude_expired = false;
+            }
+            s
+        })
+    };
+    spawn_collect_and_broadcast(&app);
+    match patched {
+        Some(s) => Ok(s),
+        None => {
+            let s = collect(&app).await?;
+            let _ = app.emit("usage-updated", &s);
+            Ok(s)
+        }
+    }
 }
 
 #[tauri::command]
@@ -970,8 +1016,10 @@ pub async fn copilot_device_poll(app: AppHandle) -> Result<String, String> {
                 guard.copilot_last_good = None;
                 guard.copilot_last_good_at = None;
             }
-            let snapshot = collect(&app).await?;
-            let _ = app.emit("usage-updated", &snapshot);
+            // Return "connected" immediately — the full collect (which can
+            // take 15-20 s with the Alibaba CLI) runs in the background and
+            // broadcasts via `usage-updated` when it finishes.
+            spawn_collect_and_broadcast(&app);
             Ok("connected".to_string())
         }
     }
@@ -995,8 +1043,9 @@ pub async fn disconnect_copilot(app: AppHandle) -> Result<SettingsView, String> 
     };
     let view: SettingsView = (&updated).into();
     save_settings_async(&app, updated).await?;
-    let snapshot = collect(&app).await?;
-    let _ = app.emit("usage-updated", &snapshot);
+    // Return settings immediately — the full collect runs in the background
+    // and broadcasts via `usage-updated` when it finishes.
+    spawn_collect_and_broadcast(&app);
     Ok(view)
 }
 
@@ -1042,9 +1091,9 @@ pub async fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
 }
 
 /// Install the Bailian CLI globally via npm. Blocking — the UI shows a spinner.
-/// After a successful install we re-collect and broadcast: `find_cli()` will now
-/// resolve, so `detection.alibaba` flips to true and the tab appears without a
-/// window toggle. Mirrors the post-mutation contract in `claude_login_finish`.
+/// After a successful install we clear the throttle and kick off a background
+/// collect so `detection.alibaba` flips to true (making the tab appear) without
+/// blocking the response on five sequential `bl` subprocesses.
 #[tauri::command]
 pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
     let msg = tokio::task::spawn_blocking(alibaba::install)
@@ -1054,16 +1103,16 @@ pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
     // is the right thing for a failed install (no half-state to broadcast).
     if msg.is_ok() {
         clear_alibaba_throttle(&app)?;
-        let snapshot = collect(&app).await?;
-        let _ = app.emit("usage-updated", &snapshot);
+        spawn_collect_and_broadcast(&app);
     }
     msg
 }
 
 /// Run `bl auth login --console` — opens the browser for the user to
 /// authenticate with Alibaba Cloud. Blocking — the UI shows a spinner. After a
-/// successful login we re-collect and broadcast so the Alibaba card populates
-/// immediately, matching `claude_login_finish` / `copilot_device_poll`.
+/// successful login we clear the throttle and kick off a background collect so
+/// the Alibaba card populates without making the user wait for five sequential
+/// `bl` subprocesses (~16 s) before the command returns.
 #[tauri::command]
 pub async fn bailian_cli_login(app: AppHandle) -> Result<String, String> {
     let msg = tokio::task::spawn_blocking(alibaba::login)
@@ -1071,8 +1120,7 @@ pub async fn bailian_cli_login(app: AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     if msg.is_ok() {
         clear_alibaba_throttle(&app)?;
-        let snapshot = collect(&app).await?;
-        let _ = app.emit("usage-updated", &snapshot);
+        spawn_collect_and_broadcast(&app);
     }
     msg
 }
@@ -1088,6 +1136,25 @@ fn clear_alibaba_throttle(app: &AppHandle) -> Result<(), String> {
     guard.alibaba_last_good = None;
     guard.alibaba_last_good_at = None;
     Ok(())
+}
+
+/// Run `collect()` in a background task and broadcast the result via
+/// `usage-updated`.  Login / connect commands call this instead of awaiting
+/// `collect()` inline so they can return immediately — the UI flips to
+/// "connected" right away while the full vendor fetch (which can take 15-20 s
+/// when the Alibaba CLI's five sequential subprocesses are involved) runs
+/// without blocking the response.  The frontend already listens for
+/// `usage-updated` and applies the snapshot when it arrives.
+fn spawn_collect_and_broadcast(app: &AppHandle) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        match collect(&app).await {
+            Ok(snapshot) => {
+                let _ = app.emit("usage-updated", &snapshot);
+            }
+            Err(e) => tracing::warn!("background collect after login failed: {e}"),
+        }
+    });
 }
 
 fn update_settings(
