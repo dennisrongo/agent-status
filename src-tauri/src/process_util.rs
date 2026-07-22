@@ -12,12 +12,13 @@
 //! `.output()` / `.spawn()`. On non-Windows targets `silent()` is a no-op, so
 //! the same code is portable.
 //!
-//! ```
-//! use crate::process_util::SilentCommand;
+//! ```no_run
+//! use agent_status_lib::process_util::SilentCommand;
 //! let out = std::process::Command::new("npm")
 //!     .args(["config", "get", "prefix"])
 //!     .silent()
-//!     .output()?;
+//!     .output()
+//!     .expect("npm config get prefix");
 //! ```
 
 #[cfg(windows)]
