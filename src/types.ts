@@ -176,4 +176,5 @@ export interface SettingsView {
   minimalView: boolean;
   tooltipProvider: TooltipProvider;
   windowMode: WindowMode;
+  hiddenProviders: string[];
 }

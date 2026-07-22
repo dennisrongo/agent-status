@@ -121,6 +121,7 @@ pub fn run() {
             commands::fit_tray_window,
             commands::set_tooltip_provider,
             commands::set_window_mode,
+            commands::set_hidden_providers,
             commands::set_refresh_secs,
             commands::set_glm_endpoint,
             commands::set_api_key,

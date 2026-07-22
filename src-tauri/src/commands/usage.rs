@@ -744,6 +744,25 @@ pub fn set_window_mode(
     Ok((&updated).into())
 }
 
+/// Set which providers are hidden from the Overview segmented control.
+/// Each entry must be a known provider id; unknown entries are rejected.
+#[tauri::command]
+pub fn set_hidden_providers(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    providers: Vec<String>,
+) -> Result<SettingsView, String> {
+    for p in &providers {
+        match p.as_str() {
+            "claude" | "glm" | "copilot" | "alibaba" => {}
+            other => return Err(format!("unknown provider: {other}")),
+        }
+    }
+    let updated = update_settings(&state, |s| s.hidden_providers = providers)?;
+    settings::save(&app, &updated).into_string()?;
+    Ok((&updated).into())
+}
+
 /// Update the auto-refresh interval (seconds), clamped to a sane range.
 #[tauri::command]
 pub fn set_refresh_secs(

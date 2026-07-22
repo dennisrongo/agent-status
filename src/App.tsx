@@ -39,6 +39,7 @@ export default function App() {
     setMinimalView,
     setTooltipProvider,
     setWindowMode,
+    setHiddenProviders,
     reloadSettings,
     connectCopilotStart,
     copilotPoll,
@@ -190,15 +191,20 @@ export default function App() {
     : true;
   // Claude's local-log totals row for the Providers tab.
   const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
+  const hidden = new Set(settings?.hiddenProviders ?? []);
   const available: ("claude" | "glm" | "copilot" | "alibaba")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
     ...(showAlibaba ? (["alibaba"] as const) : []),
   ];
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = available.length
-    ? available
-    : ["claude", "glm"];
+  const visible = available.filter((p) => !hidden.has(p));
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = visible.length
+    ? visible
+    : available.length
+      ? available
+      : ["claude", "glm"];
+  const allHidden = available.length > 0 && visible.length === 0;
   const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
 
   return (
@@ -271,6 +277,19 @@ export default function App() {
       <div className={`body${minimal ? " minimal" : ""}`}>
         {tab === "overview" && (
           <section className={`panel prov-${eff}`}>
+            {allHidden ? (
+              <div className="connect-card">
+                <p className="connect-title">All providers hidden</p>
+                <p className="connect-sub">
+                  Every detected provider is hidden from the Overview. Re-enable
+                  one in Settings → Providers.
+                </p>
+                <button className="btn primary" onClick={() => setTab("settings")}>
+                  Open Settings →
+                </button>
+              </div>
+            ) : (
+              <>
             {providerTabs.length > 1 && (
               <div className="seg" role="tablist">
                 {providerTabs.map((p) => (
@@ -393,6 +412,8 @@ export default function App() {
                 loginBusy={bailianLoginBusy}
                 loginError={bailianLoginError}
               />
+            )}
+              </>
             )}
           </section>
         )}
@@ -522,6 +543,7 @@ export default function App() {
             setLaunchOnStartup={setLaunchOnStartup}
             setTooltipProvider={setTooltipProvider}
             setWindowMode={setWindowMode}
+            setHiddenProviders={setHiddenProviders}
             copilotConnected={settings.copilotConnected}
             connectCopilotStart={connectCopilotStart}
             copilotPoll={copilotPoll}
@@ -649,16 +671,36 @@ function GlmOverview({
   // Quota windows carry a pct + status, so they render as glanceable tiles and
   // status-colored meter bars, mirroring Claude's overview.
   const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  // Per-tool breakdown rows (usageDetails) are plain text — no pct.
+  const toolRows = vendor?.detail.filter((d) => d.pct == null) ?? [];
 
   return (
     <>
       {live && vendor ? (
-        <QuotaMeters
-          windows={windows}
-          srcLabel="z.ai"
-          minimal={minimal}
-          meta="coding plan · via API key"
-        />
+        <>
+          <QuotaMeters
+            windows={windows}
+            srcLabel="z.ai"
+            minimal={minimal}
+            meta="coding plan · via API key"
+          />
+          {!minimal && toolRows.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>Tool breakdown</h2>
+                <span className="meta">monthly quota</span>
+              </div>
+              <div className="budget">
+                {toolRows.map((d, i) => (
+                  <div className="budget-foot" key={`${d.label}-${i}`} style={i === 0 ? { marginTop: 0 } : undefined}>
+                    <span className="used">{d.label}</span>
+                    <span className="rem">{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
       ) : (
         <div className="connect-card">
           <p className="connect-title">

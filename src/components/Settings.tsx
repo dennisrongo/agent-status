@@ -23,6 +23,7 @@ interface Props {
   setMinimalView: (enabled: boolean) => Promise<void>;
   setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
   setWindowMode: (mode: WindowMode) => Promise<void>;
+  setHiddenProviders: (providers: string[]) => Promise<void>;
   copilotConnected: boolean;
   connectCopilotStart: () => Promise<CopilotDeviceCode | null>;
   copilotPoll: () => Promise<string | null>;
@@ -52,6 +53,15 @@ const REFRESH_OPTIONS = [
   { secs: 300, label: "5 minutes" },
 ];
 
+const MAX_OVERVIEW = 4;
+
+const OVERVIEW_PROVIDERS = [
+  { id: "claude", label: "Claude" },
+  { id: "glm", label: "GLM / z.ai" },
+  { id: "copilot", label: "GitHub Copilot" },
+  { id: "alibaba", label: "Alibaba Cloud" },
+] as const;
+
 export function Settings({
   settings,
   setApiKey,
@@ -72,6 +82,7 @@ export function Settings({
   setMinimalView,
   setTooltipProvider,
   setWindowMode,
+  setHiddenProviders,
   copilotConnected,
   connectCopilotStart,
   copilotPoll,
@@ -88,6 +99,28 @@ export function Settings({
   alibabaVendorStatus,
   keyError,
 }: Props) {
+  const hidden = settings.hiddenProviders;
+  const checkedCount = OVERVIEW_PROVIDERS.filter((p) => !hidden.includes(p.id)).length;
+  const atCapacity = checkedCount >= MAX_OVERVIEW;
+
+  const toggleOverview = (id: string, show: boolean) => {
+    if (show && atCapacity) return;
+    const next = show
+      ? hidden.filter((p) => p !== id)
+      : [...hidden, id];
+    void setHiddenProviders(next);
+  };
+
+  const providerStatus = (id: string): string => {
+    switch (id) {
+      case "claude": return claudeSignedIn && !claudeExpired ? "connected" : "not connected";
+      case "glm": return settings.glmKeySet ? "API key set" : "no API key";
+      case "copilot": return copilotConnected ? "connected" : "not connected";
+      case "alibaba": return alibabaVendorStatus?.configured ? "CLI configured" : "not configured";
+      default: return "";
+    }
+  };
+
   return (
     <section className="panel">
       <div className="group-head">General</div>
@@ -189,6 +222,49 @@ export function Settings({
       </div>
 
       <div className="group-head">Providers</div>
+
+      <div className="sec-head">
+        <h2>Overview providers</h2>
+        <span className="meta">{checkedCount}/{MAX_OVERVIEW} selected</span>
+      </div>
+      <div className="key-row">
+        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
+          Choose which providers appear in the Overview tab. Up to {MAX_OVERVIEW} can
+          be shown at once — uncheck one to make room for another. Detected
+          providers are pre-selected.
+        </span>
+      </div>
+      {OVERVIEW_PROVIDERS.map((p) => {
+        const isChecked = !hidden.includes(p.id);
+        const disabled = !isChecked && atCapacity;
+        return (
+          <div className="key-row" key={p.id}>
+            <label className="toggle-row" style={disabled ? { opacity: 0.45 } : undefined}>
+              <span>
+                <span className="key-label">{p.label}</span>
+                <span className="connect-sub" style={{ margin: "2px 0 0" }}>
+                  {providerStatus(p.id)}
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                className="toggle"
+                checked={isChecked}
+                disabled={disabled}
+                onChange={(e) => toggleOverview(p.id, e.target.checked)}
+              />
+            </label>
+          </div>
+        );
+      })}
+      {atCapacity && (
+        <div className="key-row">
+          <span className="connect-sub" style={{ margin: "0", color: "var(--faint)" }}>
+            Uncheck a provider to make room.
+          </span>
+        </div>
+      )}
+
       <div className="sec-head">
         <h2>Claude / Anthropic</h2>
         <span className="meta">

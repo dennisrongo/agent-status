@@ -30,6 +30,7 @@ export function useUsage() {
   const minimalViewCmd = useTauriCommand<SettingsView>("set_minimal_view");
   const tooltipProviderCmd = useTauriCommand<SettingsView>("set_tooltip_provider");
   const windowModeCmd = useTauriCommand<SettingsView>("set_window_mode");
+  const hiddenProvidersCmd = useTauriCommand<SettingsView>("set_hidden_providers");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -174,6 +175,14 @@ export function useUsage() {
     [windowModeCmd],
   );
 
+  const setHiddenProviders = useCallback(
+    async (providers: string[]) => {
+      const updated = await hiddenProvidersCmd.execute({ providers });
+      if (updated) setSettings(updated);
+    },
+    [hiddenProvidersCmd],
+  );
+
   const setGlmEndpoint = useCallback(
     async (endpoint: string) => {
       const updated = await endpointCmd.execute({ endpoint });
@@ -261,6 +270,7 @@ export function useUsage() {
     setMinimalView,
     setTooltipProvider,
     setWindowMode,
+    setHiddenProviders,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,

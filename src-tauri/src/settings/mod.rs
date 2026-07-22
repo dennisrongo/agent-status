@@ -52,6 +52,9 @@ pub struct Settings {
     /// `None` until the user first moves the window in float mode.
     pub float_x: Option<i32>,
     pub float_y: Option<i32>,
+    /// Providers the user has hidden from the Overview tab's segmented control.
+    /// Detection still runs — this is purely a display filter.
+    pub hidden_providers: Vec<String>,
 }
 
 impl Default for Settings {
@@ -70,6 +73,7 @@ impl Default for Settings {
             window_mode: "dock".to_string(),
             float_x: None,
             float_y: None,
+            hidden_providers: Vec::new(),
         }
     }
 }
@@ -90,6 +94,7 @@ pub struct SettingsView {
     pub minimal_view: bool,
     pub tooltip_provider: String,
     pub window_mode: String,
+    pub hidden_providers: Vec<String>,
 }
 
 impl From<&Settings> for SettingsView {
@@ -106,6 +111,7 @@ impl From<&Settings> for SettingsView {
             minimal_view: s.minimal_view,
             tooltip_provider: s.tooltip_provider.clone(),
             window_mode: s.window_mode.clone(),
+            hidden_providers: s.hidden_providers.clone(),
         }
     }
 }
