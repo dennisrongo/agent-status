@@ -78,6 +78,19 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
         return shape_error("no `data.limits` array in response");
     };
 
+    // Plan tier (e.g. "pro", "lite") — surfaced in the headline secondary line.
+    let level = root
+        .get("level")
+        .and_then(|l| l.as_str())
+        .map(|s| {
+            let mut chars = s.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .filter(|s| !s.is_empty());
+
     // Each entry carries a sort rank so the windows render in a fixed order
     // (Session, Weekly, Monthly tools, …) regardless of the order z.ai lists
     // them — the short coding window then always sits left of the monthly tool
@@ -183,6 +196,22 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
             3
         };
         detail.push((rank, KeyVal::meter(&label, value, p)));
+
+        // Per-tool breakdown (e.g. search-prime 989, web-reader 11) — z.ai
+        // nests this inside the TIME_LIMIT entry as `usageDetails`. Rendered
+        // as plain text rows right after their parent meter; zero-usage tools
+        // are skipped to keep the list tight.
+        if let Some(items) = lim.get("usageDetails").and_then(|d| d.as_array()) {
+            for item in items {
+                let code = item.get("modelCode").and_then(|c| c.as_str()).unwrap_or("");
+                let usage = item.get("usage").and_then(value_as_f64).unwrap_or(0.0);
+                if code.is_empty() || usage == 0.0 {
+                    continue;
+                }
+                detail.push((rank, KeyVal::text(code, fmt_count(usage))));
+            }
+        }
+
         if is_5h {
             five_h = Some(p);
         } else if is_week {
@@ -202,7 +231,8 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
     let detail: Vec<KeyVal> = detail.into_iter().map(|(_, kv)| kv).collect();
 
     // Headline: weekly usage if present, else the 5-hour window, else the
-    // monthly tool quota.
+    // monthly tool quota. The plan tier (e.g. "Pro") prefixes the secondary
+    // line so the provider card shows "Pro · session quota used".
     let (used, label) = if let Some(w) = weekly {
         (w, "weekly quota used")
     } else if let Some(f) = five_h {
@@ -212,13 +242,17 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
     } else {
         (0.0, "quota")
     };
+    let secondary = match &level {
+        Some(l) => format!("{l} · {label}"),
+        None => label.to_string(),
+    };
 
     VendorStatus {
         configured: true,
         ok: true,
         error: None,
         primary: format!("{:.0}% used", used.clamp(0.0, 100.0)),
-        secondary: label.to_string(),
+        secondary,
         detail,
         auth_expired: false,
     }
@@ -446,8 +480,8 @@ mod tests {
         assert_eq!(week.value, "resets in 3d 0h");
         assert_eq!(month.value, "resets in 40d 0h");
         assert_eq!(five.pct, Some(16.0));
-        // Weekly present → it drives the headline.
-        assert_eq!(s.secondary, "weekly quota used");
+        // Weekly present → it drives the headline; level prefixes it.
+        assert_eq!(s.secondary, "Lite · weekly quota used");
     }
 
     #[test]
@@ -499,5 +533,58 @@ mod tests {
         let s = parse(&json!({ "foo": "bar" }), now());
         assert!(!s.ok);
         assert!(s.error.is_some());
+    }
+
+    #[test]
+    fn level_prefixes_secondary() {
+        let v = json!({ "data": { "level": "pro", "limits": [
+            { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 10 }
+        ] } });
+        let s = parse(&v, now());
+        assert_eq!(s.secondary, "Pro · session quota used");
+    }
+
+    #[test]
+    fn no_level_leaves_secondary_plain() {
+        let v = json!({ "data": { "limits": [
+            { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 10 }
+        ] } });
+        let s = parse(&v, now());
+        assert_eq!(s.secondary, "session quota used");
+    }
+
+    #[test]
+    fn usage_details_render_as_text_rows() {
+        let v = json!({ "data": { "level": "pro", "limits": [
+            { "type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 100,
+              "usage": 1000, "currentValue": 1000, "remaining": 0,
+              "usageDetails": [
+                  { "modelCode": "search-prime", "usage": 989 },
+                  { "modelCode": "web-reader", "usage": 11 },
+                  { "modelCode": "zread", "usage": 0 }
+              ] }
+        ] } });
+        let s = parse(&v, now());
+        assert!(s.ok);
+        // The meter row comes first, then the non-zero tool breakdown rows.
+        let meter = s.detail.iter().find(|d| d.label == "Monthly tools").unwrap();
+        assert_eq!(meter.pct, Some(100.0));
+        // zread (0 usage) is skipped; search-prime and web-reader remain.
+        let texts: Vec<_> = s.detail.iter().filter(|d| d.pct.is_none()).collect();
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0].label, "search-prime");
+        assert_eq!(texts[0].value, "989");
+        assert_eq!(texts[1].label, "web-reader");
+        assert_eq!(texts[1].value, "11");
+    }
+
+    #[test]
+    fn usage_details_absent_is_fine() {
+        let v = json!({ "data": { "limits": [
+            { "type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 5 }
+        ] } });
+        let s = parse(&v, now());
+        assert!(s.ok);
+        assert!(s.detail.iter().all(|d| d.pct.is_some()));
     }
 }
