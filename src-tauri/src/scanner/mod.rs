@@ -914,4 +914,453 @@ mod tests {
         assert_eq!(fmt_tokens(1_500_000.0), "1.5M");
         assert_eq!(fmt_tokens(2_500_000_000.0), "2.50B");
     }
+
+    // ── family_of: model name → pricing family ──
+
+    #[test]
+    fn family_of_maps_model_names() {
+        assert_eq!(family_of("claude-opus-4-7"), "opus");
+        assert_eq!(family_of("claude-opus-4-1-20250805"), "opus");
+        assert_eq!(family_of("claude-haiku-4-5"), "haiku");
+        assert_eq!(family_of("claude-sonnet-4-5"), "sonnet");
+        assert_eq!(family_of("claude-sonnet-4-5-20250929"), "sonnet");
+        // Unknown model defaults to sonnet.
+        assert_eq!(family_of("gpt-4o"), "sonnet");
+        assert_eq!(family_of(""), "sonnet");
+    }
+
+    // ── price: per-family token rates ──
+
+    #[test]
+    fn price_returns_expected_rates() {
+        let opus = price("opus");
+        assert_eq!(opus.input, 15.0);
+        assert_eq!(opus.output, 75.0);
+        assert_eq!(opus.cache_write, 18.75);
+        assert_eq!(opus.cache_read, 1.50);
+
+        let sonnet = price("sonnet");
+        assert_eq!(sonnet.input, 3.0);
+        assert_eq!(sonnet.output, 15.0);
+
+        let haiku = price("haiku");
+        assert_eq!(haiku.input, 0.80);
+        assert_eq!(haiku.output, 4.0);
+
+        // Fallback to sonnet pricing for unknown families.
+        let unknown = price("unknown");
+        assert_eq!(unknown.input, sonnet.input);
+        assert_eq!(unknown.output, sonnet.output);
+    }
+
+    // ── ceilings: plan tier token limits ──
+
+    #[test]
+    fn ceilings_per_plan_tier() {
+        let (s, w, wo) = ceilings("pro");
+        assert_eq!(s, 30_000_000);
+        assert_eq!(w, 200_000_000);
+        assert_eq!(wo, 0);
+
+        let (s, w, wo) = ceilings("max5x");
+        assert_eq!(s, 150_000_000);
+        assert_eq!(w, 1_000_000_000);
+        assert_eq!(wo, 250_000_000);
+
+        let (s, w, wo) = ceilings("max20x");
+        assert_eq!(s, 600_000_000);
+        assert_eq!(w, 4_000_000_000);
+        assert_eq!(wo, 1_000_000_000);
+
+        // Custom and unknown strings fall back to max5x.
+        let (s, _, _) = ceilings("custom");
+        assert_eq!(s, 150_000_000);
+        let (s, _, _) = ceilings("garbage");
+        assert_eq!(s, 150_000_000);
+    }
+
+    #[test]
+    fn plan_label_maps_tier_names() {
+        assert_eq!(plan_label("pro"), "Pro");
+        assert_eq!(plan_label("max20x"), "Max 20×");
+        assert_eq!(plan_label("custom"), "Custom");
+        assert_eq!(plan_label("max5x"), "Max 5×");
+        assert_eq!(plan_label("unknown"), "Max 5×");
+    }
+
+    // ── fmt_cost ──
+
+    #[test]
+    fn cost_formatting() {
+        assert_eq!(fmt_cost(0.0), "$0.00");
+        assert_eq!(fmt_cost(1.5), "$1.50");
+        assert_eq!(fmt_cost(123.456), "$123.46");
+    }
+
+    // ── countdown: reset time remaining ──
+
+    #[test]
+    fn countdown_no_reset_is_ready() {
+        let now = Utc::now();
+        assert_eq!(countdown(None, now), "ready");
+    }
+
+    #[test]
+    fn countdown_past_reset_is_resetting() {
+        let now = Utc::now();
+        let past = now - Duration::hours(1);
+        assert_eq!(countdown(Some(past), now), "resetting");
+    }
+
+    #[test]
+    fn countdown_formats_minutes_hours_and_days() {
+        let now = DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // 30 minutes ahead
+        let r = now + Duration::minutes(30);
+        assert_eq!(countdown(Some(r), now), "30m");
+
+        // 4h 15m ahead
+        let r = now + Duration::hours(4) + Duration::minutes(15);
+        assert_eq!(countdown(Some(r), now), "4h 15m");
+
+        // 2d 3h ahead
+        let r = now + Duration::days(2) + Duration::hours(3);
+        assert_eq!(countdown(Some(r), now), "2d 3h");
+    }
+
+    // ── humanize_when ──
+
+    #[test]
+    fn humanize_when_minutes_ago() {
+        let now = DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = now - Duration::minutes(45);
+        assert_eq!(humanize_when(ts, now), "45m ago");
+    }
+
+    #[test]
+    fn humanize_when_hours_ago() {
+        let now = DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = now - Duration::hours(3);
+        assert_eq!(humanize_when(ts, now), "3h ago");
+    }
+
+    #[test]
+    fn humanize_when_yesterday() {
+        let now = DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = now - Duration::days(1);
+        assert_eq!(humanize_when(ts, now), "yesterday");
+    }
+
+    #[test]
+    fn humanize_when_days_ago() {
+        let now = DateTime::parse_from_rfc3339("2026-06-17T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = now - Duration::days(5);
+        assert_eq!(humanize_when(ts, now), "5d ago");
+    }
+
+    // ── clean_project ──
+
+    #[test]
+    fn clean_project_strips_known_prefixes() {
+        assert_eq!(
+            clean_project("-Volumes-CrucialX10-projects-myproj"),
+            "myproj"
+        );
+        assert_eq!(
+            clean_project("-Users-dennisrongo-myproj"),
+            "myproj"
+        );
+        assert_eq!(
+            clean_project("-Volumes-CrucialX10-myproj"),
+            "myproj"
+        );
+    }
+
+    #[test]
+    fn clean_project_truncates_long_names() {
+        let long = "x".repeat(50);
+        let cleaned = clean_project(&long);
+        assert_eq!(cleaned.len(), 28);
+    }
+
+    #[test]
+    fn clean_project_empty_returns_em_dash() {
+        assert_eq!(clean_project(""), "—");
+        assert_eq!(clean_project("---"), "—");
+    }
+
+    // ── status_for: threshold classification ──
+
+    #[test]
+    fn status_for_thresholds() {
+        assert_eq!(status_for(0.0), ("ok", "Healthy"));
+        assert_eq!(status_for(69.9), ("ok", "Healthy"));
+        assert_eq!(status_for(70.0), ("warn", "Watch"));
+        assert_eq!(status_for(89.9), ("warn", "Watch"));
+        assert_eq!(status_for(90.0), ("danger", "Near limit"));
+        assert_eq!(status_for(100.0), ("danger", "Near limit"));
+    }
+
+    // ── weekday_abbr ──
+
+    #[test]
+    fn weekday_abbr_all_days() {
+        assert_eq!(weekday_abbr(0), "Mon");
+        assert_eq!(weekday_abbr(1), "Tue");
+        assert_eq!(weekday_abbr(2), "Wed");
+        assert_eq!(weekday_abbr(3), "Thu");
+        assert_eq!(weekday_abbr(4), "Fri");
+        assert_eq!(weekday_abbr(5), "Sat");
+        assert_eq!(weekday_abbr(6), "Sun");
+    }
+
+    // ── Multi-model scan (opus + sonnet + haiku) ──
+
+    #[test]
+    fn multi_model_aggregates_per_family() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-06-17T19:00:00.000Z";
+
+        let mk = |model: &str, tin, tout| {
+            format!(
+                r#"{{"timestamp":"{recent}","sessionId":"s-{model}","message":{{"model":"{model}","usage":{{"input_tokens":{tin},"output_tokens":{tout},"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+            )
+        };
+        write_jsonl(&claude, "multi", &[
+            &mk("claude-opus-4-7", 100, 200),
+            &mk("claude-sonnet-4-5", 1000, 2000),
+            &mk("claude-haiku-4-5", 500, 100),
+        ]);
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        // All three model rows have non-zero tokens (the families actually used).
+        let opus = snap.models.iter().find(|m| m.key == "opus").unwrap();
+        assert_eq!(opus.tokens, "300");
+        let sonnet = snap.models.iter().find(|m| m.key == "sonnet").unwrap();
+        assert_eq!(sonnet.tokens, "3K");
+        let haiku = snap.models.iter().find(|m| m.key == "haiku").unwrap();
+        assert_eq!(haiku.tokens, "600");
+
+        // Three distinct sessions → three session rows.
+        assert_eq!(snap.sessions.len(), 3);
+        // Total tokens = 300 + 3000 + 600 = 3900 → fmt_tokens rounds to 4K.
+        assert_eq!(snap.kpi.session_tokens, "4K");
+        // Cost: opus = (100*15 + 200*75)/1e6 = 0.0165
+        //       sonnet = (1000*3 + 2000*15)/1e6 = 0.033
+        //       haiku = (500*0.8 + 100*4)/1e6 = 0.0008
+        // Total ≈ $0.05
+        assert_eq!(snap.kpi.session_cost, "$0.05");
+    }
+
+    // ── Session cap: MAX_CLAUDE_ROWS = 25 ──
+
+    #[test]
+    fn session_rows_capped_at_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Write 30 sessions, each in its own project dir so they don't merge.
+        for i in 0..30 {
+            let ts = format!("2026-06-17T{:02}:00:00.000Z", i % 24);
+            let line = format!(
+                r#"{{"timestamp":"{ts}","sessionId":"sess{i:02}","message":{{"model":"claude-sonnet-4-5","usage":{{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+            );
+            write_jsonl(&claude, &format!("proj-{i:02}"), &[&line]);
+        }
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        // MAX_CLAUDE_ROWS = 25 → 25 Claude rows (no GLM row since zai is empty).
+        assert_eq!(snap.sessions.len(), 25);
+        // Session IDs are "sess00".."sess29" → 6 chars after take(8) truncation.
+        assert_eq!(snap.sessions[0].id.len(), 6);
+    }
+
+    // ── KPI calculations across the session/week/total windows ──
+
+    #[test]
+    fn kpi_session_and_week_and_total() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // A session entry from 2 hours ago (within 5h window and 7d window).
+        let recent_ts = "2026-06-17T18:00:00.000Z";
+        // An entry from 4 days ago (outside 5h, inside 7d).
+        let old_ts = "2026-06-13T12:00:00.000Z";
+        // An entry from 10 days ago (outside 7d, counted only in total).
+        let ancient_ts = "2026-06-07T12:00:00.000Z";
+
+        let mk = |ts: &str, tin, tout| {
+            format!(
+                r#"{{"timestamp":"{ts}","sessionId":"s1","message":{{"model":"claude-sonnet-4-5","usage":{{"input_tokens":{tin},"output_tokens":{tout},"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+            )
+        };
+        write_jsonl(&claude, "proj-a", &[
+            &mk(recent_ts, 100, 200),     // 300 tokens
+            &mk(old_ts, 1000, 2000),     // 3000 tokens
+            &mk(ancient_ts, 10000, 20000), // 30000 tokens
+        ]);
+
+        let snap = scan(&claude, &zai, "max5x", now);
+
+        // Session (5h): only the recent entry → 300 tokens.
+        assert_eq!(snap.kpi.session_tokens, "300");
+        // Week (7d): recent + old → 300 + 3000 = 3300 → fmt_tokens rounds to 3K.
+        assert_eq!(snap.kpi.week_tokens, "3K");
+        // Total: 300 + 3000 + 30000 = 33300 → fmt_tokens rounds to 33K.
+        assert_eq!(snap.kpi.total_tokens, "33K");
+    }
+
+    // ── Week chart: 7 days always present, today included ──
+
+    #[test]
+    fn week_chart_has_seven_days_ending_today() {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snap = scan(
+            &tmp.path().join("none"),
+            &tmp.path().join("nozai"),
+            "pro",
+            now,
+        );
+        assert_eq!(snap.week.len(), 7);
+        // Last entry is today.
+        let today_key = now.format("%Y-%m-%d").to_string();
+        assert_eq!(snap.week.last().unwrap().date, today_key);
+        // Bar percentages are 0 when there's no data (all days equal 0, max = 1).
+        for w in &snap.week {
+            assert_eq!(w.bar_pct, 0);
+        }
+    }
+
+    // ── Plan tier changes affect bucket percentages ──
+
+    #[test]
+    fn plan_tier_changes_bucket_usage_percentage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-06-17T19:00:00.000Z";
+
+        // 30M tokens — hits 100% on Pro (30M ceiling), 20% on Max 5× (150M).
+        let line = format!(
+            r#"{{"timestamp":"{recent}","sessionId":"s1","message":{{"model":"claude-sonnet-4-5","usage":{{"input_tokens":30000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        );
+        write_jsonl(&claude, "proj-a", &[&line]);
+
+        let pro_snap = scan(&claude, &zai, "pro", now);
+        let pro_pct = pro_snap.limits.buckets[0].used_pct;
+        assert!((pro_pct - 100.0).abs() < 0.1, "pro should be ~100%, got {pro_pct}");
+
+        let max5x_snap = scan(&claude, &zai, "max5x", now);
+        let max5x_pct = max5x_snap.limits.buckets[0].used_pct;
+        assert!((max5x_pct - 20.0).abs() < 0.1, "max5x should be ~20%, got {max5x_pct}");
+    }
+
+    // ── Cache tokens are counted in the total ──
+
+    #[test]
+    fn cache_tokens_counted_in_total() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-06-17T19:00:00.000Z";
+
+        // input=100, output=200, cache_write=300, cache_read=400 → 1000 total.
+        let line = format!(
+            r#"{{"timestamp":"{recent}","sessionId":"s1","message":{{"model":"claude-sonnet-4-5","usage":{{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":300,"cache_read_input_tokens":400}}}}}}"#
+        );
+        write_jsonl(&claude, "proj-a", &[&line]);
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        assert_eq!(snap.kpi.session_tokens, "1K");
+    }
+
+    // ── GLM scan: counts server-start events and active days ──
+
+    #[test]
+    fn glm_scan_counts_sessions_and_active_days() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&zai).unwrap();
+
+        std::fs::write(
+            zai.join("zai-mcp-2026-06-15.log"),
+            "[2026-06-15T08:00:00.000Z] INFO: MCP Server started successfully\n",
+        ).unwrap();
+        std::fs::write(
+            zai.join("zai-mcp-2026-06-16.log"),
+            "[2026-06-16T10:00:00.000Z] INFO: MCP Server started successfully\n[2026-06-16T14:00:00.000Z] INFO: MCP Server started successfully\n",
+        ).unwrap();
+
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snap = scan(&claude, &zai, "max5x", now);
+        assert_eq!(snap.glm.sessions, 3); // 1 + 2 start events
+        assert_eq!(snap.glm.active_days, 2);
+    }
+
+    // ── Lines without "usage" are skipped ──
+
+    #[test]
+    fn skips_lines_without_usage_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recent = "2026-06-17T19:00:00.000Z";
+
+        // A line with no "usage" field, plus a real usage line.
+        let no_usage = r#"{"timestamp":"recent","sessionId":"s1","message":{"model":"claude-sonnet-4-5"}}"#;
+        let with_usage = format!(
+            r#"{{"timestamp":"{recent}","sessionId":"s1","message":{{"model":"claude-sonnet-4-5","usage":{{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        );
+        write_jsonl(&claude, "proj-a", &[no_usage, &with_usage]);
+
+        let snap = scan(&claude, &zai, "max5x", now);
+        // Only the usage-bearing line counted → 300 tokens.
+        assert_eq!(snap.kpi.session_tokens, "300");
+    }
 }

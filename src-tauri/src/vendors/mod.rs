@@ -137,3 +137,108 @@ pub struct Detection {
     /// after any in-place auto-refresh, so a freshly-refreshed token reads false.
     pub claude_expired: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── KeyVal::text ──
+
+    #[test]
+    fn keyval_text_has_no_pct_or_status() {
+        let kv = KeyVal::text("Plan", "Pro");
+        assert_eq!(kv.label, "Plan");
+        assert_eq!(kv.value, "Pro");
+        assert!(kv.pct.is_none(), "text rows must not carry a pct");
+        assert!(kv.status.is_none(), "text rows must not carry a status");
+    }
+
+    // ── KeyVal::meter ──
+
+    #[test]
+    fn keyval_meter_sets_pct_and_status() {
+        let kv = KeyVal::meter("Session", "resets in 3h", 40.0);
+        assert_eq!(kv.label, "Session");
+        assert_eq!(kv.value, "resets in 3h");
+        assert_eq!(kv.pct, Some(40.0));
+        assert_eq!(kv.status, Some("ok"));
+    }
+
+    #[test]
+    fn keyval_meter_status_thresholds() {
+        assert_eq!(KeyVal::meter("a", "", 0.0).status, Some("ok"));
+        assert_eq!(KeyVal::meter("a", "", 69.9).status, Some("ok"));
+        assert_eq!(KeyVal::meter("a", "", 70.0).status, Some("warn"));
+        assert_eq!(KeyVal::meter("a", "", 89.9).status, Some("warn"));
+        assert_eq!(KeyVal::meter("a", "", 90.0).status, Some("danger"));
+        assert_eq!(KeyVal::meter("a", "", 100.0).status, Some("danger"));
+    }
+
+    #[test]
+    fn keyval_meter_clamps_above_100() {
+        let kv = KeyVal::meter("a", "", 250.0);
+        assert_eq!(kv.pct, Some(100.0));
+        assert_eq!(kv.status, Some("danger"));
+    }
+
+    #[test]
+    fn keyval_meter_clamps_below_zero() {
+        let kv = KeyVal::meter("a", "", -10.0);
+        assert_eq!(kv.pct, Some(0.0));
+        assert_eq!(kv.status, Some("ok"));
+    }
+
+    #[test]
+    fn keyval_meter_rounds_to_one_decimal() {
+        let kv = KeyVal::meter("a", "", 33.333);
+        assert_eq!(kv.pct, Some(33.3));
+        let kv = KeyVal::meter("a", "", 66.666);
+        assert_eq!(kv.pct, Some(66.7));
+    }
+
+    // ── short_date ──
+
+    #[test]
+    fn short_date_extracts_date_from_rfc3339() {
+        assert_eq!(short_date("2026-07-01T00:00:00Z"), "2026-07-01");
+        assert_eq!(short_date("2026-07-01T12:30:45+02:00"), "2026-07-01");
+    }
+
+    #[test]
+    fn short_date_extracts_date_from_space_separated() {
+        assert_eq!(short_date("2026-07-01 12:30:45"), "2026-07-01");
+    }
+
+    #[test]
+    fn short_date_returns_input_when_no_separator() {
+        assert_eq!(short_date("2026-07-01"), "2026-07-01");
+    }
+
+    // ── VendorStatus::not_configured ──
+
+    #[test]
+    fn not_configured_defaults() {
+        let s = VendorStatus::not_configured();
+        assert!(!s.configured);
+        assert!(!s.ok);
+        assert!(s.error.is_none());
+        assert_eq!(s.primary, "—");
+        assert_eq!(s.secondary, "no key set");
+        assert!(s.detail.is_empty());
+        assert!(!s.auth_expired);
+    }
+
+    // ── VendorStatus::failed ──
+
+    #[test]
+    fn failed_sets_configured_and_error() {
+        let s = VendorStatus::failed("HTTP 500");
+        assert!(s.configured);
+        assert!(!s.ok);
+        assert_eq!(s.error.as_deref(), Some("HTTP 500"));
+        assert_eq!(s.primary, "—");
+        assert_eq!(s.secondary, "fetch failed");
+        assert!(s.detail.is_empty());
+        assert!(!s.auth_expired);
+    }
+}

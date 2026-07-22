@@ -128,4 +128,75 @@ mod tests {
         assert!(!s.ok);
         assert!(s.error.is_some());
     }
+
+    #[test]
+    fn handles_numeric_and_string_amounts() {
+        // A mix of numeric and string amounts must all be summed.
+        let v = json!({
+            "data": [
+                { "results": [ { "amount": 10.5, "currency": "USD" }, { "amount": "0.50" } ] }
+            ]
+        });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.primary, "$11.00");
+    }
+
+    #[test]
+    fn reports_currency_from_results() {
+        let v = json!({
+            "data": [
+                { "results": [ { "amount": 5.0, "currency": "EUR" } ] }
+            ]
+        });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.secondary, "7-day org cost (EUR)");
+    }
+
+    #[test]
+    fn empty_results_array_is_zero() {
+        let v = json!({ "data": [{ "results": [] }] });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.primary, "$0.00");
+    }
+
+    #[test]
+    fn bucket_without_results_is_skipped() {
+        // A bucket with no `results` key should not cause a panic.
+        let v = json!({
+            "data": [
+                { "other": true },
+                { "results": [ { "amount": 3.0 } ] }
+            ]
+        });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.primary, "$3.00");
+    }
+
+    #[test]
+    fn result_without_amount_is_skipped() {
+        let v = json!({
+            "data": [
+                { "results": [ { "currency": "USD" }, { "amount": 2.0 } ] }
+            ]
+        });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.primary, "$2.00");
+    }
+
+    #[test]
+    fn detail_includes_reported_spend() {
+        let v = json!({
+            "data": [{ "results": [ { "amount": 42.0, "currency": "USD" } ] }]
+        });
+        let s = parse_cost(&v);
+        assert!(s.ok);
+        assert_eq!(s.detail.len(), 1);
+        assert_eq!(s.detail[0].label, "Reported spend");
+        assert_eq!(s.detail[0].value, "$42.00");
+    }
 }
