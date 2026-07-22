@@ -208,7 +208,7 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
                 if code.is_empty() || usage == 0.0 {
                     continue;
                 }
-                detail.push((rank, KeyVal::text(code, fmt_count(usage))));
+                detail.push((rank, KeyVal::text(&friendly_tool_name(code), fmt_count(usage))));
             }
         }
 
@@ -298,6 +298,18 @@ fn humanize(typ: &str) -> String {
         typ.trim().to_string()
     } else {
         words.join(" ")
+    }
+}
+
+/// Map a z.ai `modelCode` to a human-friendly label. Known codes get a
+/// curated name; anything new falls back to `humanize` (title-case, de-hyphen).
+fn friendly_tool_name(code: &str) -> String {
+    match code {
+        "search-prime" => "Search".into(),
+        "web-reader" => "Web Reader".into(),
+        "zread" => "ZRead".into(),
+        "code-interpreter" => "Code Interpreter".into(),
+        _ => humanize(code),
     }
 }
 
@@ -569,12 +581,13 @@ mod tests {
         // The meter row comes first, then the non-zero tool breakdown rows.
         let meter = s.detail.iter().find(|d| d.label == "Monthly tools").unwrap();
         assert_eq!(meter.pct, Some(100.0));
-        // zread (0 usage) is skipped; search-prime and web-reader remain.
+        // zread (0 usage) is skipped; search-prime and web-reader remain,
+        // rendered with human-friendly labels.
         let texts: Vec<_> = s.detail.iter().filter(|d| d.pct.is_none()).collect();
         assert_eq!(texts.len(), 2);
-        assert_eq!(texts[0].label, "search-prime");
+        assert_eq!(texts[0].label, "Search");
         assert_eq!(texts[0].value, "989");
-        assert_eq!(texts[1].label, "web-reader");
+        assert_eq!(texts[1].label, "Web Reader");
         assert_eq!(texts[1].value, "11");
     }
 
