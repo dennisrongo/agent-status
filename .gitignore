@@ -30,3 +30,7 @@ src-tauri/gen/schemas/
 *.ntvs*
 *.njsproj
 *.sln
+
+# Local agent / tooling state
+.qwen/
+.zcode/
