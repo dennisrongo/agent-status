@@ -209,7 +209,7 @@ auto-update payload with the **same** Tauri updater key, and merges a
 | --- | --- |
 | Node + npm, Rust (MSVC), Tauri prereqs | https://v2.tauri.app/start/prerequisites (WebView2 ships with Win10/11) |
 | `gh` authenticated, `git` configured | `gh auth status` |
-| **The same updater key as macOS** | Copy `~/.tauri/agent-status-updater.key` from the Mac, then set `TAURI_SIGNING_PRIVATE_KEY` (path or base64 contents) + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in `.env`. The app verifies every platform against the one pubkey in `tauri.conf.json`, so the key **must** match. |
+| **The same updater key as macOS** | Copy `~/.tauri/agent-status-updater.key` from the Mac, then set `TAURI_SIGNING_PRIVATE_KEY` (path or base64 contents) in `.env`. **The key has no password** — set `TAURI_SIGNING_PRIVATE_KEY=""` (empty), do *not* set a password var. The app verifies every platform against the one pubkey in `tauri.conf.json`, so the key **must** match (key id `RWQd3bhFhWatl…`). |
 
 > The `.exe` is **not** Authenticode-signed (updater-signature-only by design), so
 > Windows SmartScreen warns "unknown publisher" on first install. The in-app
@@ -295,3 +295,38 @@ own web-flow key automatically.
 | App opens but quits immediately on another Mac | Almost always missing notarization/staple, or an entitlement the binary actually needs — read the notary log: `xcrun notarytool log <submission-id>`. |
 | Build fails: *signing private key not set* | `createUpdaterArtifacts` is on, so a build needs `TAURI_SIGNING_PRIVATE_KEY_PATH` in `.env` (the updater key, not the Apple cert). |
 | Update banner never appears | `latest.json` `version` must be **newer** than the installed app, and its `signature` must be the exact contents of the matching `.sig`. |
+| Windows: updater prompts/fails on a password | **The updater key has no password.** Its base64 decodes to `rsign encrypted secret key`, but that "encrypted" header is just the minisign/`rsign` format label — the key was generated with an **empty** password. Sign with `TAURI_PRIVATE_KEY_PASSWORD=""` (or `tauri signer sign -p ""`). Never set a real password. |
+| Windows: `tauri build` produced only the `.exe`, no `.nsis.zip`/`.sig` (ends with *A public key has been found, but no private key*) | The bundled signing step silently skipped the updater artifacts. Either the env var isn't exported into the build, or the backgrounded build dropped it. Re-run in the foreground with `export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/agent-status-updater.key)"; export TAURI_PRIVATE_KEY_PASSWORD=""`. |
+| Windows: signing still won't produce `.nsis.zip` | Build the updater payload **manually** as a fallback (see [Manual `.nsis.zip` fallback](#manual-nsiszip-fallback) below) — it's a stored zip of the installer, signed separately. |
+
+### Manual `.nsis.zip` fallback
+
+If `tauri build` won't emit the signed `.nsis.zip`/`.sig`, the artifact is simple to
+reconstruct by hand — this is exactly what `tauri-bundler`'s `create_zip` does
+(`crates.io` source: `tauri-bundler-*/src/bundle/updater_bundle.rs`): a **stored**
+(uncompressed) zip containing **only** the NSIS `.exe`, with unix perms `0o755`.
+
+```bash
+cd src-tauri/target/release/bundle/nsis
+
+# 1. Build the stored .nsis.zip from the installer that DID build
+python3 - <<'EOF'
+import zipfile
+src = "Agent Usage Monitor_$(grep version ../../../../package.json | ... )_x64-setup.exe"  # fill the version
+# (use the actual file name in the folder)
+EOF
+# Python: open the .exe, write it into a ZIP_STORED zip with external_attr=(0o755<<16)|0x80000000
+
+# 2. Sign it with the empty-password key
+npx tauri signer sign -f ~/.tauri/agent-status-updater.key -p "" \
+  "Agent Usage Monitor_<VERSION>_x64-setup.nsis.zip"
+# -> writes ..._x64-setup.nsis.zip.sig (440 bytes), and prints the base64 signature
+
+# 3. Upload + merge the manifest (see the Windows release steps above)
+```
+
+The resulting `.sig` is 440 bytes; the `latest.json` `signature` field is its **base64
+contents** (i.e. the same string the signer prints as "Public signature"). The signature's
+embedded `file:` comment must match the `.nsis.zip` name, and its key id (`RUQd3bhFhWatl…`)
+must match `tauri.conf.json`'s `pubkey`. Darwin entries are **never** touched by the Windows
+step — load the existing `updater/latest.json`, add only `windows-x86_64`, write back.

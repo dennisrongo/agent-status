@@ -35,6 +35,8 @@ A version bump must stay in sync across **`package.json`, `package-lock.json`, `
 
 ### Signing key — there is NO password
 
+Full release procedure (macOS leads, Windows follows) is in **[docs/RELEASE.md](docs/RELEASE.md)** — including a `scripts/release-win.ps1` + `/release-windows` skill that automates the Windows side and a manual `.nsis.zip` fallback. The non-obvious facts that bite releases:
+
 The Tauri updater signing key (`~/.tauri/agent-status-updater.key`) is **not password-protected**. Its base64 payload decodes to an `rsign encrypted secret key` header, but that "encrypted" marker is just the minisign/`rsign` format label — the key was generated with an **empty password**. When signing, always pass an empty password:
 
 ```bash
