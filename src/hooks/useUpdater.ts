@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 
 type Phase =
   | "idle"
@@ -72,7 +72,10 @@ export function useUpdater(opts: { auto?: boolean } = {}) {
       setState((s) => ({ ...s, phase: "downloading" }));
       await update.downloadAndInstall();
       setState((s) => ({ ...s, phase: "ready" }));
-      await relaunch();
+      // Relaunch via our own command, which clears the single-instance lock
+      // before spawning the new binary — the plugin's restart races the lock
+      // on macOS and the relaunched child silently exits as a "duplicate".
+      await invoke("restart_after_update");
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       setState((s) => ({ ...s, phase: "error", error }));

@@ -134,6 +134,7 @@ pub fn run() {
             commands::install_bailian_cli,
             commands::bailian_cli_login,
             commands::open_url,
+            commands::restart_after_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running agent-status");
