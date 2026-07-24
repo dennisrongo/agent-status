@@ -33,6 +33,24 @@ Releases are signed + notarized + auto-updating and are driven by skills, **not*
 
 A version bump must stay in sync across **`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`** — the release skills handle this.
 
+### Signing key — there is NO password
+
+The Tauri updater signing key (`~/.tauri/agent-status-updater.key`) is **not password-protected**. Its base64 payload decodes to an `rsign encrypted secret key` header, but that "encrypted" marker is just the minisign/`rsign` format label — the key was generated with an **empty password**. When signing, always pass an empty password:
+
+```bash
+# env-var form (for `tauri build`):
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/agent-status-updater.key)"
+export TAURI_PRIVATE_KEY_PASSWORD=""
+npx tauri build
+
+# explicit CLI form (for signing a single artifact):
+npx tauri signer sign -f ~/.tauri/agent-status-updater.key -p "" <file>
+```
+
+Never ask for or set a signing password — there isn't one. If a future release hangs on a password prompt or fails with a decryption error using an empty password, the key has changed and this note is stale. The public half embedded in `tauri.conf.json` (`plugins.updater.pubkey`, key id `RWQd3bhFhWatl…`) must match the secret key; the `tauri-plugin-updater` verifies every downloaded update against it and signature checks **cannot be disabled**.
+
+> Build-troubleshooting note: if `tauri build` is invoked with the env vars set but the `.nsis.zip` + `.nsis.zip.sig` updater artifacts still don't appear (only the `.exe`), the bundled signing step silently failed. The `.nsis.zip` is just a **stored** (uncompressed) zip of the NSIS `.exe` with `0o755` perms (see `tauri-bundler/.../updater_bundle.rs::create_zip`), so it can be built and signed manually as a fallback, then the `windows-x86_64` entry in `latest.json` updated to point at it.
+
 ## Architecture
 
 **Thin React frontend that only renders; rich Rust backend that does all the work.** All real logic (log parsing, vendor APIs, encryption, throttling, plan ceilings) lives in Rust. The frontend invokes commands and renders whatever snapshot comes back.
