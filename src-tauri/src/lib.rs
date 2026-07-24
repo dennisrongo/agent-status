@@ -120,6 +120,7 @@ pub fn run() {
             commands::set_minimal_view,
             commands::fit_tray_window,
             commands::set_tooltip_provider,
+            commands::set_update_available,
             commands::set_window_mode,
             commands::set_hidden_providers,
             commands::set_refresh_secs,

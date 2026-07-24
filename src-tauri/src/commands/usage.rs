@@ -719,6 +719,14 @@ pub fn set_tooltip_provider(
     Ok((&updated).into())
 }
 
+/// Reflect update availability on the tray icon (badge dot + tooltip). Driven
+/// by the frontend updater hook on each check; no return value — it's a
+/// best-effort UI nudge and the next check will retry if the tray isn't ready.
+#[tauri::command]
+pub fn set_update_available(app: AppHandle, available: bool) {
+    crate::tray::set_update_available(&app, available);
+}
+
 /// Switch between "dock" (anchored to the tray icon / taskbar corner) and
 /// "float" (user-draggable, stays where placed) window placement.
 #[tauri::command]

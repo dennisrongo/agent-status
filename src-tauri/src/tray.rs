@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIconId},
     AppHandle, Emitter, Manager, Rect, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -39,6 +39,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_icon)
         .icon_as_template(true)
+        .tooltip("Agent Usage")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -85,6 +86,39 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     build_hover_window(app)?;
 
     Ok(())
+}
+
+/// Swap the tray icon + tooltip to reflect whether a signed update is
+/// available. The icon is looked up by its fixed id (`TRAY_ID`), so this works
+/// on the already-built tray without rebuilding it. Called from the frontend's
+/// updater hook whenever it (re)checks the endpoint — including on startup and
+/// on a 4-hour interval, so a long-running app surfaces the indicator without
+/// the dropdown needing to be open.
+///
+/// No-op if the tray can't be found (e.g. during very early startup); the next
+/// check will retry.
+pub fn set_update_available(app: &AppHandle, available: bool) {
+    let Some(tray) = app.tray_by_id(&TrayIconId::new(TRAY_ID)) else {
+        return;
+    };
+    // Same monochrome template convention as `build()`; the badge is a second
+    // ink dot in the empty top-right corner of the gauge icon. The two
+    // include_bytes! arrays differ in size, so coerce to &[u8] slices.
+    let bytes: &[u8] = if available {
+        include_bytes!("../icons/tray-badge.png")
+    } else {
+        include_bytes!("../icons/tray.png")
+    };
+    let Ok(img) = tauri::image::Image::from_bytes(bytes) else {
+        return;
+    };
+    let _ = tray.set_icon(Some(img));
+    let tooltip = if available {
+        "Agent Usage — update available"
+    } else {
+        "Agent Usage"
+    };
+    let _ = tray.set_tooltip(Some(tooltip));
 }
 
 /// Pre-create the hover popover (hidden) so it's already loaded and listening

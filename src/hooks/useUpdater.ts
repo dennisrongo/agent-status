@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
 import { invoke } from "@tauri-apps/api/core";
 
+// How often a running app re-checks the update endpoint after its initial
+// mount-time check. Long enough to avoid pointless polling, short enough that
+// a release published while the app is open surfaces within a few hours.
+const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
 type Phase =
   | "idle"
   | "checking"
@@ -53,16 +58,32 @@ export function useUpdater(opts: { auto?: boolean } = {}) {
   useEffect(() => {
     if (!auto) return;
     let cancelled = false;
+
     // Silent auto-check: a passive banner shouldn't show dev/offline errors.
-    checkForUpdate()
-      .then((found) => {
-        if (cancelled || !found) return;
-        setUpdate(found);
-        setState({ phase: "available", version: found.version, error: null });
-      })
-      .catch(() => {});
+    // Runs once on mount and again every UPDATE_INTERVAL_MS, so a long-running
+    // app learns about a release published after it started. Each definitive
+    // result (available / up-to-date) also toggles the tray-icon badge via the
+    // Rust command; transient failures are swallowed so a brief offline blip
+    // doesn't drop the indicator.
+    const run = () => {
+      checkForUpdate()
+        .then((found) => {
+          if (cancelled) return;
+          if (found) {
+            setUpdate(found);
+            setState({ phase: "available", version: found.version, error: null });
+          } else {
+            setState({ phase: "uptodate", version: null, error: null });
+          }
+          invoke("set_update_available", { available: !!found });
+        })
+        .catch(() => {});
+    };
+    run();
+    const id = setInterval(run, UPDATE_INTERVAL_MS);
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
   }, [auto]);
 
