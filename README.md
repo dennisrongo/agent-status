@@ -1,10 +1,12 @@
 <div align="center">
 
-# 📊 Agent Usage Monitor
+<img src="src-tauri/icons/icon.png" alt="Agent Usage Monitor icon" width="96"/>
+
+# Agent Usage Monitor
 
 ### A lightweight **menubar widget** that tracks your AI coding agent usage in real time.
 
-Session / weekly / Opus limits · token spend · cost estimates · per-session history — all read from local logs, refreshed on a timer, living quietly in your menu bar.
+Per-provider usage · live vendor quota · token spend · cost estimates · session history — for **Claude Code, GLM/z.ai, GitHub Copilot, and Alibaba Bailian** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
 
 <br/>
 
@@ -13,7 +15,7 @@ Session / weekly / Opus limits · token spend · cost estimates · per-session h
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![Platform](https://img.shields.io/badge/macOS-menubar-000000?logo=apple&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-12%20passing-3FB950)
+![Tests](https://img.shields.io/badge/tests-171%20passing-3FB950)
 
 <br/>
 
@@ -25,14 +27,25 @@ Session / weekly / Opus limits · token spend · cost estimates · per-session h
 
 ## ✨ Features
 
-- **What's left, at a glance.** Mirrors Claude's `/usage` view — three meters for **Session (5h)**, **Week · all models**, and **Week · Opus**, each with real usage and a live reset countdown.
-- **Real token data.** Exact per-request token counts parsed straight from Claude Code's session logs — input, output, and cache read/write.
-- **Cost estimates** per model (Opus / Sonnet / Haiku) from standard-tier pricing.
-- **7-day spark chart** + all-time model breakdown + recent-session history.
-- **Live vendor data (optional).** Add a GLM Coding Plan or Anthropic admin API key — stored **encrypted, machine-bound** — for real GLM 5h/weekly quota and org-level Anthropic cost.
-- **Always current.** A Rust timer re-scans and pushes fresh data to the UI — **auto-refresh interval is configurable in Settings (default 30s)**, applied live without a restart. No frozen snapshots.
-- **Stays out of the way.** Menubar-only (`LSUIElement`), click-to-toggle dropdown, single-instance, launch-at-login.
-- **Self-updating.** Signed auto-updates via the Tauri updater — an in-app "Update & restart" banner appears when a newer build ships.
+### One widget, four providers
+A segmented Overview switches between **Claude Code, GLM/z.ai, GitHub Copilot, and Alibaba Bailian** — each with its own usage meters and a live reset countdown.
+
+### The data
+- **Real token counts.** Exact per-request tokens parsed straight from **Claude Code's session logs** (input, output, cache read/write) and **GLM server activity** from local MCP logs; Copilot and Bailian report live quota straight from their APIs.
+- **Cost estimates** for Claude models (Opus / Sonnet / Haiku) from standard-tier pricing, with optional **org-level Anthropic cost** via the admin key. (Other providers don't expose per-token cost locally.)
+- **7-day spark chart** + all-time model breakdown + recent-session history, spanning every provider.
+
+### Live vendor data (optional)
+Connect any provider for real-time quota and usage — **Claude Code** (in-app OAuth sign-in), **GLM/z.ai** (API key), **GitHub Copilot** (device-flow OAuth), or **Alibaba Bailian** (Bailian CLI). All secrets are stored **encrypted and machine-bound**.
+
+### Always current
+A Rust timer re-scans and pushes fresh data to the UI — **auto-refresh interval is configurable in Settings (default 30s)**, applied live without a restart. No frozen snapshots.
+
+### Stays out of the way
+Menubar-only (`LSUIElement`), click-to-toggle dropdown, single-instance, optional **launch-at-login**, and a **dock/float window mode** (float makes the header a drag handle). A compact **minimal view** trims the Overview to headline stats, and a **tray hover popover** previews the top meters — pick which provider it shows in Settings.
+
+### Self-updating
+Signed auto-updates via the Tauri updater — an in-app "Update & restart" banner appears when a newer build ships, and the **tray icon badges** a dot when an update is available.
 
 ---
 
@@ -42,21 +55,21 @@ Session / weekly / Opus limits · token spend · cost estimates · per-session h
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/overview.png" alt="Overview" width="320"/><br/>
-      <b>Overview</b> — limits, reset timers, week chart, model split
+      <b>Overview</b> — per-provider meters, reset timers, week chart, model split
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/sessions.png" alt="Sessions" width="320"/><br/>
-      <b>Sessions</b> — recent sessions with project, model, tokens, cost
+      <b>Sessions</b> — recent sessions across providers, with project, model, tokens, cost
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/providers.png" alt="Providers" width="320"/><br/>
-      <b>Providers</b> — connection status + live vendor usage
+      <b>Providers</b> — one card per provider (Claude / GLM / Copilot / Alibaba): connection status + live usage
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/settings.png" alt="Settings" width="320"/><br/>
-      <b>Settings</b> — plan tier + encrypted API keys
+      <b>Settings</b> — provider connects, plan tier, refresh interval, encrypted keys
     </td>
   </tr>
 </table>
@@ -73,14 +86,14 @@ A **thin React frontend** that only renders, and a **rich Rust backend** that do
 │                               │        │                                       │
 │  useUsage / useTauriCommand   │◀──────▶│  commands/   invoke handlers          │
 │  Meter · WeekChart · Settings │ invoke │  scanner/    log aggregation          │
-│                               │ + event│  vendors/    z.ai + Anthropic clients │
+│                               │ + event│  vendors/   claude·glm·copilot·alibaba│
 │  renders the snapshot         │◀──────▶│  encryption/ AES-256-GCM key vault    │
 │                               │ usage- │  settings/ · state/ · storage/        │
 │                               │ updated│  tray.rs     menubar dropdown         │
 └──────────────────────────────┘        └─────────────────────────────────────┘
                                             ▲ timer (cfg) ▲ on-demand refresh
                                             │            │
-                            ~/.claude/projects/**/*.jsonl · ~/.zai/zai-mcp-*.log
+                            ~/.claude/projects/**/*.jsonl · ~/.zai/zai-mcp-*.log  (Copilot + Alibaba are API/CLI-only)
 ```
 
 The backend scans logs (off-thread via `spawn_blocking`), optionally fetches live vendor data, merges one `UsageSnapshot`, and emits `usage-updated` to the UI.
@@ -89,18 +102,47 @@ The backend scans logs (off-thread via `spawn_blocking`), optionally fetches liv
 
 ## 📡 Data sources — what's real vs. estimated
 
+Each provider reports different things. Local data comes from parsing logs on disk; live data is pulled from the provider's API or CLI and is opt-in.
+
+### Claude Code
+
 | Metric | Source | Real? |
 | --- | --- | --- |
-| Claude token usage (session/week/model) | `~/.claude/projects/**/*.jsonl` | ✅ exact |
-| Claude cost | derived from per-model pricing | ≈ estimated |
+| Token usage (session / week / model) | `~/.claude/projects/**/*.jsonl` | ✅ exact |
+| Cost | derived from per-model pricing | ≈ estimated |
 | Reset countdowns | computed from log timestamps | ✅ real |
-| **"% left" ceilings** | editable plan tier (Pro / Max 5× / Max 20×) | ≈ estimated* |
-| GLM token/cost (local) | `~/.zai/*.log` — lifecycle only | ❌ shown as `—` |
-| GLM 5h/weekly quota (with key) | z.ai monitor API (`/api/monitor/usage/quota/limit`) | ✅ real |
-| Anthropic cost (with admin key) | Anthropic Admin Cost API | ✅ real (org-level) |
-| Copilot premium-request quota | GitHub `copilot_internal/user` (your editor / `gh` token) | ✅ real (per-user) |
+| "% left" ceilings | editable plan tier (Pro / Max 5× / Max 20×) | ≈ estimated\* |
 
-\* The Pro/Max subscription "weekly % left" has **no public API**, so ceilings are estimates you set by picking your plan. The Anthropic admin key reports **org-level** cost, not the subscription quota.
+\* The Pro/Max subscription "weekly % left" has **no public API**, so ceilings are estimates you set by picking your plan.
+
+### GLM / z.ai
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| Token / cost (local) | `~/.zai/*.log` — lifecycle only | ❌ shown as `—` |
+| 5h / weekly quota (with key) | z.ai monitor API (`/api/monitor/usage/quota/limit`) | ✅ real |
+
+### Anthropic (org-level, with admin key)
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| Cost | Anthropic Admin Cost API | ✅ real (org-level) |
+
+> Reports **org-level** spend, not your Claude Code subscription quota — it's a separate, complementary metric.
+
+### GitHub Copilot
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| Premium-request quota | GitHub `copilot_internal/user` (your editor / `gh` token) | ✅ real (per-user) |
+
+### Alibaba Bailian
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| Usage / quota | Bailian CLI (`bl`) — `bl auth` login | ✅ real (per-account) |
+
+> GLM, Copilot, and Alibaba expose no per-token local cost — only their live quota meters.
 
 ---
 
@@ -109,7 +151,7 @@ The backend scans logs (off-thread via `spawn_blocking`), optionally fetches liv
 ```bash
 npm install
 npm run tauri dev      # develop
-npm run tauri build    # bundle an unsigned .app + .dmg (local testing)
+npm run tauri build    # bundle an unsigned app for your OS (.app/.dmg on macOS, .exe/.msi on Windows)
 ```
 
 > **Heads-up:** if your shell sets `NODE_ENV=production`, install with
@@ -133,9 +175,12 @@ notarization credentials, verification, universal builds, troubleshooting).
 ## ⚙️ Configuration
 
 - **Auto-refresh interval** — choose 10s / 15s / 30s / 1m / 2m / 5m in Settings (default **30s**); takes effect on the next cycle.
-- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the limit ceilings and persists.
-- **API keys** (Settings tab) — optional z.ai and Anthropic admin (`sk-ant-admin…`) keys for live vendor data.
+- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (GLM / Copilot / Alibaba) report their own limits regardless.
+- **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** — all from inside the app.
+- **API keys** (Settings tab) — optional **z.ai** and **Anthropic admin** (`sk-ant-admin…`) keys for live vendor data. (The Anthropic admin key reports org-level cost and is separate from your Claude Code subscription quota.)
 - **z.ai endpoint** — editable; confirm it against your account's billing API.
+- **Overview providers** — hide or show individual providers on the Overview; pick which one the **tray hover popover** shows.
+- **Window mode** — dock (default) or float (header becomes a drag handle); toggle **minimal view** to trim the Overview to headline stats; toggle **launch-at-login**.
 
 ### 🔒 Security
 
@@ -148,14 +193,14 @@ API keys are encrypted with **AES-256-GCM** using an **Argon2id**-derived key wh
 ```
 agent-status/
 ├── src/                      # React frontend (thin)
-│   ├── hooks/                # useTauriCommand, useUsage
-│   ├── components/           # Meter, WeekChart, VendorCard, Settings
+│   ├── hooks/                # useTauriCommand, useUpdater, useUsage
+│   ├── components/           # About, HoverPopover, Meter, Settings, UpdateBanner, WeekChart
 │   └── styles/app.css
 └── src-tauri/                # Rust backend (rich)
     └── src/
         ├── commands/         # invoke handlers (collect = scan + vendor)
         ├── scanner/          # log → UsageSnapshot aggregation
-        ├── vendors/          # z.ai + Anthropic API clients
+        ├── vendors/          # claude · glm · anthropic · copilot · alibaba
         ├── encryption/       # at-rest key vault
         ├── settings/ state/ storage/
         └── tray.rs           # menubar icon + dropdown
@@ -166,14 +211,15 @@ agent-status/
 ## 🧪 Tests
 
 ```bash
-cd src-tauri && cargo test --all     # 12 tests: scanner, encryption, vendor parsers
+cd src-tauri && cargo test --all     # 127 Rust tests: scanner, encryption, vendor parsers
+npm test                             # 44 frontend tests: hooks + components
 ```
 
 CI runs the suite on macOS / Windows / Ubuntu (`.github/workflows/unit-tests.yml`).
 
 ---
 
-## 📝 Notes / TODO
+## 📝 Notes
 
 - **Icon** lives at `src-tauri/icons/icon.svg` → `icon.png`; re-run `npx @tauri-apps/cli icon src-tauri/icons/icon.png` after editing to regenerate every size.
 - **Bundle identifier** is `com.dennisrongo.agentstatus` — change in `src-tauri/tauri.conf.json` if distributing under a different org.
