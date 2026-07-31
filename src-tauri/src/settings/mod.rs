@@ -15,6 +15,10 @@ const SETTINGS_FILE: &str = "settings.json";
 pub const MIN_REFRESH_SECS: u64 = 10;
 pub const MAX_REFRESH_SECS: u64 = 3600;
 
+/// Allowed bounds for the provider auto-rotate interval (seconds).
+pub const MIN_ROTATE_SECS: u64 = 10;
+pub const MAX_ROTATE_SECS: u64 = 60;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -55,6 +59,10 @@ pub struct Settings {
     /// Providers the user has hidden from the Overview tab's segmented control.
     /// Detection still runs — this is purely a display filter.
     pub hidden_providers: Vec<String>,
+    /// Automatically cycle through visible provider tabs in the Overview.
+    pub auto_rotate: bool,
+    /// Seconds each provider stays visible during auto-rotation (10–60).
+    pub rotate_secs: u64,
 }
 
 impl Default for Settings {
@@ -74,6 +82,8 @@ impl Default for Settings {
             float_x: None,
             float_y: None,
             hidden_providers: Vec::new(),
+            auto_rotate: false,
+            rotate_secs: 10,
         }
     }
 }
@@ -95,6 +105,8 @@ pub struct SettingsView {
     pub tooltip_provider: String,
     pub window_mode: String,
     pub hidden_providers: Vec<String>,
+    pub auto_rotate: bool,
+    pub rotate_secs: u64,
 }
 
 impl From<&Settings> for SettingsView {
@@ -112,6 +124,8 @@ impl From<&Settings> for SettingsView {
             tooltip_provider: s.tooltip_provider.clone(),
             window_mode: s.window_mode.clone(),
             hidden_providers: s.hidden_providers.clone(),
+            auto_rotate: s.auto_rotate,
+            rotate_secs: s.rotate_secs,
         }
     }
 }
@@ -134,6 +148,8 @@ fn migrate(s: &mut Settings) {
     if s.glm_endpoint.trim().is_empty() || glm::STALE_ENDPOINTS.contains(&s.glm_endpoint.as_str()) {
         s.glm_endpoint = glm::DEFAULT_ENDPOINT.to_string();
     }
+    s.refresh_secs = s.refresh_secs.clamp(MIN_REFRESH_SECS, MAX_REFRESH_SECS);
+    s.rotate_secs = s.rotate_secs.clamp(MIN_ROTATE_SECS, MAX_ROTATE_SECS);
 }
 
 pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), storage::StorageError> {

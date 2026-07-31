@@ -24,6 +24,8 @@ interface Props {
   setTooltipProvider: (provider: TooltipProvider) => Promise<void>;
   setWindowMode: (mode: WindowMode) => Promise<void>;
   setHiddenProviders: (providers: string[]) => Promise<void>;
+  setAutoRotate: (enabled: boolean) => Promise<void>;
+  setRotateSecs: (secs: number) => Promise<void>;
   copilotConnected: boolean;
   connectCopilotStart: () => Promise<CopilotDeviceCode | null>;
   copilotPoll: () => Promise<string | null>;
@@ -51,6 +53,15 @@ const REFRESH_OPTIONS = [
   { secs: 60, label: "1 minute" },
   { secs: 120, label: "2 minutes" },
   { secs: 300, label: "5 minutes" },
+];
+
+const ROTATE_OPTIONS = [
+  { secs: 10, label: "10 seconds" },
+  { secs: 20, label: "20 seconds" },
+  { secs: 30, label: "30 seconds" },
+  { secs: 40, label: "40 seconds" },
+  { secs: 50, label: "50 seconds" },
+  { secs: 60, label: "60 seconds" },
 ];
 
 const MAX_OVERVIEW = 4;
@@ -83,6 +94,8 @@ export function Settings({
   setTooltipProvider,
   setWindowMode,
   setHiddenProviders,
+  setAutoRotate,
+  setRotateSecs,
   copilotConnected,
   connectCopilotStart,
   copilotPoll,
@@ -189,7 +202,7 @@ export function Settings({
         </div>
         <select
           className="interval-select"
-          value={refreshValue(settings.refreshSecs)}
+          value={snapToPreset(REFRESH_OPTIONS, settings.refreshSecs)}
           onChange={(e) => setRefreshSecs(Number(e.target.value))}
         >
           {REFRESH_OPTIONS.map((o) => (
@@ -199,6 +212,45 @@ export function Settings({
           ))}
         </select>
       </div>
+
+      <div className="sec-head">
+        <h2>Auto-rotate providers</h2>
+        <span className="meta">{settings.autoRotate ? `every ${settings.rotateSecs}s` : "off"}</span>
+      </div>
+      <div className="key-row">
+        <label className="toggle-row">
+          <span>
+            <span className="key-label">Rotate provider tabs</span>
+            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
+              Cycle through visible providers on the Overview automatically so you can glance at each one without switching tabs.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            className="toggle"
+            checked={settings.autoRotate}
+            onChange={(e) => setAutoRotate(e.target.checked)}
+          />
+        </label>
+      </div>
+      {settings.autoRotate && (
+        <div className="key-row">
+          <div className="key-top">
+            <span className="key-label">Rotate interval</span>
+          </div>
+          <select
+            className="interval-select"
+            value={snapToPreset(ROTATE_OPTIONS, settings.rotateSecs)}
+            onChange={(e) => setRotateSecs(Number(e.target.value))}
+          >
+            {ROTATE_OPTIONS.map((o) => (
+              <option key={o.secs} value={o.secs}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="sec-head">
         <h2>Startup</h2>
@@ -376,8 +428,8 @@ export function Settings({
 }
 
 // Snap a stored interval to the nearest preset so the select always shows a value.
-function refreshValue(secs: number): number {
-  return REFRESH_OPTIONS.reduce((best, o) =>
+function snapToPreset(options: { secs: number }[], secs: number): number {
+  return options.reduce((best, o) =>
     Math.abs(o.secs - secs) < Math.abs(best.secs - secs) ? o : best,
   ).secs;
 }

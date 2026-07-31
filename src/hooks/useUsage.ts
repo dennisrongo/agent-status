@@ -31,6 +31,8 @@ export function useUsage() {
   const tooltipProviderCmd = useTauriCommand<SettingsView>("set_tooltip_provider");
   const windowModeCmd = useTauriCommand<SettingsView>("set_window_mode");
   const hiddenProvidersCmd = useTauriCommand<SettingsView>("set_hidden_providers");
+  const autoRotateCmd = useTauriCommand<SettingsView>("set_auto_rotate");
+  const rotateSecsCmd = useTauriCommand<SettingsView>("set_rotate_secs");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -183,6 +185,22 @@ export function useUsage() {
     [hiddenProvidersCmd],
   );
 
+  const setAutoRotate = useCallback(
+    async (enabled: boolean) => {
+      const updated = await autoRotateCmd.execute({ enabled });
+      if (updated) setSettings(updated);
+    },
+    [autoRotateCmd],
+  );
+
+  const setRotateSecs = useCallback(
+    async (secs: number) => {
+      const updated = await rotateSecsCmd.execute({ secs });
+      if (updated) setSettings(updated);
+    },
+    [rotateSecsCmd],
+  );
+
   const setGlmEndpoint = useCallback(
     async (endpoint: string) => {
       const updated = await endpointCmd.execute({ endpoint });
@@ -271,6 +289,8 @@ export function useUsage() {
     setTooltipProvider,
     setWindowMode,
     setHiddenProviders,
+    setAutoRotate,
+    setRotateSecs,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,

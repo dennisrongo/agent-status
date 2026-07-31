@@ -784,6 +784,31 @@ pub fn set_refresh_secs(
     Ok((&updated).into())
 }
 
+/// Toggle automatic provider-tab rotation in the Overview.
+#[tauri::command]
+pub fn set_auto_rotate(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    let updated = update_settings(&state, |s| s.auto_rotate = enabled)?;
+    settings::save(&app, &updated).into_string()?;
+    Ok((&updated).into())
+}
+
+/// Update the provider auto-rotate interval (seconds), clamped to 10–60.
+#[tauri::command]
+pub fn set_rotate_secs(
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    secs: u64,
+) -> Result<SettingsView, String> {
+    let clamped = secs.clamp(settings::MIN_ROTATE_SECS, settings::MAX_ROTATE_SECS);
+    let updated = update_settings(&state, |s| s.rotate_secs = clamped)?;
+    settings::save(&app, &updated).into_string()?;
+    Ok((&updated).into())
+}
+
 #[tauri::command]
 pub fn set_glm_endpoint(
     app: AppHandle,

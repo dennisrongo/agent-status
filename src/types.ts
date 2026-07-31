@@ -177,4 +177,6 @@ export interface SettingsView {
   tooltipProvider: TooltipProvider;
   windowMode: WindowMode;
   hiddenProviders: string[];
+  autoRotate: boolean;
+  rotateSecs: number;
 }

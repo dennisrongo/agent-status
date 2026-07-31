@@ -7,6 +7,7 @@ import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WeekChart } from "./components/WeekChart";
 import { useUsage } from "./hooks/useUsage";
+import { useAutoRotate } from "./hooks/useAutoRotate";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { generatedLabel, tileLabel } from "./format";
@@ -40,6 +41,8 @@ export default function App() {
     setTooltipProvider,
     setWindowMode,
     setHiddenProviders,
+    setAutoRotate,
+    setRotateSecs,
     reloadSettings,
     connectCopilotStart,
     copilotPoll,
@@ -120,6 +123,36 @@ export default function App() {
     fitWindowHeight(win, WINDOW_WIDTH, height, floating).catch(() => {});
   }, [minimal, provider, tab, snapshot, floating]);
 
+  // Provider-tab visibility is computed from detection + the hidden-providers
+  // setting. Computed before the snapshot guard so the auto-rotate effect (a
+  // hook) is always called in the same order — Rules of Hooks.
+  const showClaude = snapshot?.detection?.claude ?? true;
+  const showGlm = snapshot?.detection?.glm ?? true;
+  const showCopilot = snapshot?.detection?.copilot ?? false;
+  const showAlibaba = snapshot?.detection?.alibaba ?? false;
+  const hidden = new Set(settings?.hiddenProviders ?? []);
+  const available: ("claude" | "glm" | "copilot" | "alibaba")[] = [
+    ...(showClaude ? (["claude"] as const) : []),
+    ...(showGlm ? (["glm"] as const) : []),
+    ...(showCopilot ? (["copilot"] as const) : []),
+    ...(showAlibaba ? (["alibaba"] as const) : []),
+  ];
+  const visible = available.filter((p) => !hidden.has(p));
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = visible.length
+    ? visible
+    : available.length
+      ? available
+      : ["claude", "glm"];
+  const allHidden = available.length > 0 && visible.length === 0;
+  const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
+
+  // Auto-rotate: cycle through visible provider tabs on a timer so the user
+  // can glance at each provider's numbers without clicking.
+  const autoRotate = (settings?.autoRotate ?? false) && tab === "overview" && providerTabs.length > 1;
+  const rotateMs = (settings?.rotateSecs ?? 10) * 1000;
+
+  useAutoRotate(autoRotate, rotateMs, providerTabs, setProvider);
+
   if (!snapshot) {
     return (
       <main className="widget">
@@ -171,13 +204,6 @@ export default function App() {
 
   const { meta, limits, week, models, sessions, providers, glm, kpi } = snapshot;
 
-  // Only show a provider tab when that provider is actually present locally
-  // (installed CLI / login, configured key, or local activity). Fall back to
-  // showing both if the backend didn't report detection.
-  const showClaude = snapshot.detection?.claude ?? true;
-  const showGlm = snapshot.detection?.glm ?? true;
-  const showCopilot = snapshot.detection?.copilot ?? false;
-  const showAlibaba = snapshot.detection?.alibaba ?? false;
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
   // the Overview shows a connect/reconnect prompt instead of stats. Detection
@@ -191,21 +217,6 @@ export default function App() {
     : true;
   // Claude's local-log totals row for the Providers tab.
   const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
-  const hidden = new Set(settings?.hiddenProviders ?? []);
-  const available: ("claude" | "glm" | "copilot" | "alibaba")[] = [
-    ...(showClaude ? (["claude"] as const) : []),
-    ...(showGlm ? (["glm"] as const) : []),
-    ...(showCopilot ? (["copilot"] as const) : []),
-    ...(showAlibaba ? (["alibaba"] as const) : []),
-  ];
-  const visible = available.filter((p) => !hidden.has(p));
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = visible.length
-    ? visible
-    : available.length
-      ? available
-      : ["claude", "glm"];
-  const allHidden = available.length > 0 && visible.length === 0;
-  const eff = providerTabs.includes(provider) ? provider : providerTabs[0];
 
   return (
     <main className="widget">
@@ -544,6 +555,8 @@ export default function App() {
             setTooltipProvider={setTooltipProvider}
             setWindowMode={setWindowMode}
             setHiddenProviders={setHiddenProviders}
+            setAutoRotate={setAutoRotate}
+            setRotateSecs={setRotateSecs}
             copilotConnected={settings.copilotConnected}
             connectCopilotStart={connectCopilotStart}
             copilotPoll={copilotPoll}

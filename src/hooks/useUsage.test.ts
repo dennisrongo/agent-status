@@ -38,6 +38,8 @@ const mockSettings: SettingsView = {
   tooltipProvider: "claude",
   windowMode: "dock",
   hiddenProviders: [],
+  autoRotate: false,
+  rotateSecs: 10,
 };
 
 function makeSnapshot(genMs: number): UsageSnapshot {

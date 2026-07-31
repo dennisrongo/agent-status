@@ -124,6 +124,8 @@ pub fn run() {
             commands::set_window_mode,
             commands::set_hidden_providers,
             commands::set_refresh_secs,
+            commands::set_auto_rotate,
+            commands::set_rotate_secs,
             commands::set_glm_endpoint,
             commands::set_api_key,
             commands::clear_api_key,
