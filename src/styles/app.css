@@ -157,16 +157,46 @@ body {
 .kpi .k-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
 .kpi .k-num { font-family: var(--mono); font-size: 21px; font-weight: 600; letter-spacing: -0.03em; margin-top: 7px; line-height: 1; font-variant-numeric: tabular-nums; }
 .kpi .k-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; letter-spacing: -0.02em; }
-/* The active provider tints its headline numbers + chart with its brand color
-   (--brand), set per-provider below; status colors (ok/warn/danger) stay as-is
-   so a near-limit meter still reads red regardless of brand. */
+/* Ring gauge — circular progress arc around the KPI headline number. The arc
+   length is driven by --pct (0–100). Provider panels mount when their tab
+   becomes active, so the from-only keyframe (implicit `to` = the computed
+   offset) sweeps the arc in once per focus; the transition only re-settles
+   values that change while the panel is already on screen — no replay on a
+   background refresh. */
+.ring { position: relative; width: 76px; height: 76px; margin: 9px auto 1px; }
+.ring svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ring-track { fill: none; stroke: var(--bar-bg); stroke-width: 7; }
+.ring-arc {
+  fill: none;
+  stroke: var(--ok);
+  stroke-width: 7;
+  stroke-linecap: round;
+  /* pathLength=100 puts dash math in percentage space: one dash the length
+     of the whole circle, pushed back by (100 − pct) to reveal the arc. */
+  stroke-dasharray: 100px;
+  stroke-dashoffset: calc(100px - var(--pct, 0) * 1px);
+  animation: ring-in .9s cubic-bezier(.22, 1, .36, 1) .1s backwards;
+  transition: stroke-dashoffset .6s cubic-bezier(.22, 1, .36, 1), stroke .35s ease;
+}
+@keyframes ring-in { from { stroke-dashoffset: 100px; } }
+.ring.warn .ring-arc { stroke: var(--warn); }
+.ring.danger .ring-arc { stroke: var(--danger); }
+.ring-num { position: absolute; inset: 0; display: grid; place-items: center; }
+/* The number becomes the ring's center: drop its tile margin and size it to
+   fit the 62px clear inner diameter ("100%" is the widest case). */
+.ring .k-num { margin-top: 0; font-size: 16.5px; color: var(--ok); }
+.ring.warn .k-num { color: var(--warn); }
+.ring.danger .k-num { color: var(--danger); }
+@media (prefers-reduced-motion: reduce) {
+  .ring-arc, .fill, .bar, .mfill { animation: none; }
+  .ring-arc { transition: none; }
+}
+/* --brand tints the week-chart bars per provider; the KPI numbers now use
+   status colors (ok/warn/danger) via the ring, not the brand. */
 .panel.prov-claude  { --brand: var(--claude); }
 .panel.prov-glm     { --brand: var(--glm); }
 .panel.prov-copilot { --brand: var(--copilot); }
 .panel.prov-alibaba { --brand: var(--alibaba); }
-
-.kpi.accent .k-num { color: var(--brand, var(--accent)); }
-.kpi.ok .k-num { color: var(--ok); }
 
 /* section heads */
 .sec-head { display: flex; align-items: baseline; justify-content: space-between; margin: 16px 2px 9px; }
@@ -179,7 +209,7 @@ body {
 
 /* track / fill */
 .track { height: 9px; border-radius: 6px; background: var(--bar-bg); overflow: hidden; border: 1px solid var(--border); }
-.fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), oklch(76% 0.14 175)); }
+.fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), oklch(76% 0.14 175)); animation: meter-in .7s cubic-bezier(.22, 1, .36, 1) backwards; }
 .fill.ok { background: linear-gradient(90deg, var(--ok), oklch(78% 0.14 160)); }
 .fill.warn { background: linear-gradient(90deg, var(--warn), oklch(82% 0.13 70)); }
 .fill.danger { background: linear-gradient(90deg, var(--danger), oklch(72% 0.16 35)); }
@@ -227,7 +257,7 @@ body {
 .bars { display: flex; align-items: flex-end; gap: 7px; height: 84px; margin-bottom: 8px; }
 .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; position: relative; }
 .bar-wrap { width: 100%; flex: 1; display: flex; align-items: flex-end; }
-.bar { width: 100%; min-height: 3px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand, var(--accent)), color-mix(in oklab, var(--brand, var(--accent)) 55%, var(--bg))); opacity: .92; transition: .15s; }
+.bar { width: 100%; min-height: 3px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand, var(--accent)), color-mix(in oklab, var(--brand, var(--accent)) 55%, var(--bg))); opacity: .92; transition: opacity .15s, box-shadow .15s, height .4s cubic-bezier(.22, 1, .36, 1); animation: bar-in .55s cubic-bezier(.22, 1, .36, 1) backwards; animation-delay: calc(.06s + var(--i, 0) * .04s); }
 .bar-col:hover .bar { opacity: 1; box-shadow: 0 0 0 2px color-mix(in oklab, var(--brand, var(--accent)), transparent 70%); }
 .bar-col .day { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 .bar-col .tip { position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 6px; padding: 4px 7px; font-family: var(--mono); font-size: 10px; white-space: nowrap; color: var(--fg); opacity: 0; pointer-events: none; transition: .12s; z-index: 5; }
@@ -238,12 +268,28 @@ body {
 .model-row { display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 10px; }
 .model-row .name { font-size: 12px; font-weight: 550; }
 .model-row .mtrack { height: 7px; border-radius: 5px; background: var(--bar-bg); overflow: hidden; border: 1px solid var(--border); }
-.model-row .mfill { height: 100%; border-radius: 5px; }
+.model-row .mfill { height: 100%; border-radius: 5px; animation: meter-in .6s cubic-bezier(.22, 1, .36, 1) backwards; }
 .mfill.opus { background: var(--violet); }
 .mfill.sonnet { background: var(--accent); }
 .mfill.haiku { background: var(--ok); }
 .model-row .mval { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .model-row .mval b { color: var(--fg); font-weight: 600; }
+
+/* overview draw-in animations — play once when the provider panel mounts
+   (tab focus / auto-rotate). Implicit `to` = the inline-style dimension, so
+   bars sweep from zero to their value. Stagger: meters/models use nth-child
+   (the Meter component has no index prop); week chart uses --i (index is
+   available in its map). Don't unify — the two approaches serve different
+   component shapes. */
+@keyframes meter-in { from { width: 0; } }
+@keyframes bar-in { from { height: 0; } }
+.meters .meter:nth-child(2) .fill { animation-delay: .08s; }
+.meters .meter:nth-child(3) .fill { animation-delay: .16s; }
+.meters .meter:nth-child(4) .fill { animation-delay: .24s; }
+.models .model-row:nth-child(2) .mfill { animation-delay: .07s; }
+.models .model-row:nth-child(3) .mfill { animation-delay: .14s; }
+.models .model-row:nth-child(4) .mfill { animation-delay: .21s; }
+.models .model-row:nth-child(5) .mfill { animation-delay: .28s; }
 
 /* providers */
 .prov { display: flex; flex-direction: column; gap: 8px; }

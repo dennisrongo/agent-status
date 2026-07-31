@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { About } from "./components/About";
 import { Meter } from "./components/Meter";
+import { RingGauge } from "./components/RingGauge";
 import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WeekChart } from "./components/WeekChart";
@@ -333,10 +334,12 @@ export default function App() {
                   ) : (
                     <>
                       <div className="kpis">
-                        {limits.buckets.slice(0, 3).map((b, i) => (
-                          <div className={`kpi ${["accent", "ok", ""][i]}`} key={b.name}>
+                        {limits.buckets.slice(0, 3).map((b) => (
+                          <div className="kpi" key={b.name}>
                             <div className="k-label">{tileLabel(b.name)}</div>
-                            <div className="k-num">{b.usedPct}%</div>
+                            <RingGauge pct={b.usedPct} status={b.status}>
+                              <div className="k-num">{b.usedPct}%</div>
+                            </RingGauge>
                             <div className="k-sub">resets {b.reset}</div>
                           </div>
                         ))}
@@ -628,9 +631,11 @@ function QuotaMeters({
         style={{ gridTemplateColumns: `repeat(${windows.length}, 1fr)` }}
       >
         {windows.map((d, i) => (
-          <div className="kpi accent" key={`${d.label}-${i}`}>
+          <div className="kpi" key={`${d.label}-${i}`}>
             <div className="k-label">{d.label}</div>
-            <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
+            <RingGauge pct={d.pct ?? 0} status={d.status ?? "ok"}>
+              <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
+            </RingGauge>
             <div className="k-sub">{d.value || "live"}</div>
           </div>
         ))}
@@ -789,7 +794,7 @@ function CopilotOverview({
           ) : (
             // Unlimited plan: no quota to meter, so show the headline instead.
             <div className="kpis glm-kpis">
-              <div className="kpi accent">
+              <div className="kpi">
                 <div className="k-label">{vendor.secondary || "premium requests"}</div>
                 <div className="k-num">{vendor.primary}</div>
                 <div className="k-sub">live</div>
@@ -866,7 +871,7 @@ function AlibabaOverview({
               style={{ gridTemplateColumns: `repeat(${windowRows.length}, 1fr)` }}
             >
               {windowRows.map((d, i) => (
-                <div className="kpi accent" key={`${d.label}-${i}`}>
+                <div className="kpi" key={`${d.label}-${i}`}>
                   <div className="k-label">{d.label}</div>
                   <div className="k-num">{d.value.split("·")[0].trim()}</div>
                   <div className="k-sub">{d.value.split("·").slice(1).join("·").trim() || "live"}</div>
@@ -875,7 +880,7 @@ function AlibabaOverview({
             </div>
           ) : (
             <div className="kpis glm-kpis">
-              <div className="kpi accent">
+              <div className="kpi">
                 <div className="k-label">{vendor.secondary || "usage"}</div>
                 <div className="k-num">{vendor.primary}</div>
                 <div className="k-sub">live</div>
