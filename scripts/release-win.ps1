@@ -76,10 +76,17 @@ function Has-Command($name) { return [bool](Get-Command $name -ErrorAction Silen
 function Invoke-SignerSign {
   param([string]$Key, [string]$Password, [string]$File)
   $keyArgs = if (Test-Path -LiteralPath $Key -ErrorAction SilentlyContinue) { @('-f', $Key) } else { @('-k', $Key) }
-  $savedK = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY', 'Process')
-  $savedP = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PATH', 'Process')
+  $savedK = $env:TAURI_SIGNING_PRIVATE_KEY
+  $savedP = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+  # Clear BOTH the .NET process block and PowerShell's $env: cache. Under
+  # PowerShell 7 the .NET SetEnvironmentVariable($null) call does NOT clear the
+  # $env: cache that a child `npx` inherits, so the CLI would still auto-read
+  # TAURI_SIGNING_PRIVATE_KEY (--private-key) and collide with our explicit
+  # -f/--private-key-path. `$env:X = $null` clears the cache the child sees.
   [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY', $null, 'Process')
   [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PATH', $null, 'Process')
+  $env:TAURI_SIGNING_PRIVATE_KEY = $null
+  $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null
   try {
     if ([string]::IsNullOrEmpty($Password)) {
       $bat = Join-Path ([System.IO.Path]::GetTempPath()) ("relwin-sign-{0}.cmd" -f $PID)
@@ -92,6 +99,8 @@ function Invoke-SignerSign {
   } finally {
     [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY', $savedK, 'Process')
     [Environment]::SetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY_PATH', $savedP, 'Process')
+    $env:TAURI_SIGNING_PRIVATE_KEY = $savedK
+    $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $savedP
   }
 }
 
