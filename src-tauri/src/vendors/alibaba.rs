@@ -23,9 +23,8 @@ static NPM_PREFIX: OnceLock<Option<PathBuf>> = OnceLock::new();
 fn npm_global_prefix() -> Option<PathBuf> {
     NPM_PREFIX
         .get_or_init(|| {
-            let out = std::process::Command::new("npm")
+            let out = npm_command()
                 .args(["config", "get", "prefix"])
-                .silent()
                 .output()
                 .ok()?;
             if !out.status.success() {
@@ -98,6 +97,24 @@ pub fn find_cli() -> Option<PathBuf> {
 /// Whether the `bl` (Bailian CLI) binary is reachable.
 pub fn cli_on_path() -> bool {
     find_cli().is_some()
+}
+
+/// Build a Command for npm, handling Windows .cmd wrappers.
+/// On Windows, npm ships as `npm.cmd` — a batch shim that CreateProcess can't
+/// execute directly. Route through `cmd.exe /C` so the spawn succeeds.
+fn npm_command() -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/C").arg("npm").silent();
+        return cmd;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("npm");
+        cmd.silent();
+        cmd
+    }
 }
 
 /// Build a Command for the Bailian CLI, handling Windows .cmd wrappers.
@@ -197,9 +214,8 @@ pub fn login() -> Result<String, String> {
 /// Install the Bailian CLI globally via npm. Returns a human-readable result.
 pub fn install() -> Result<String, String> {
     // Verify npm is available first.
-    let npm_ok = std::process::Command::new("npm")
+    let npm_ok = npm_command()
         .arg("--version")
-        .silent()
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -209,9 +225,8 @@ pub fn install() -> Result<String, String> {
         );
     }
 
-    let out = std::process::Command::new("npm")
+    let out = npm_command()
         .args(["install", "-g", "bailian-cli"])
-        .silent()
         .output()
         .map_err(|e| format!("npm spawn failed: {e}"))?;
 
