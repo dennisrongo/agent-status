@@ -7,7 +7,7 @@ import { useUpdater } from "../hooks/useUpdater";
 export function UpdateBanner() {
   const { phase, version, error, install } = useUpdater();
 
-  if (phase === "idle" || phase === "checking") return null;
+  if (phase === "idle" || phase === "checking" || phase === "uptodate") return null;
 
   const busy = phase === "downloading" || phase === "ready";
 
