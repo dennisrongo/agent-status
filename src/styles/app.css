@@ -157,6 +157,8 @@ body {
 .kpi .k-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
 .kpi .k-num { font-family: var(--mono); font-size: 21px; font-weight: 600; letter-spacing: -0.03em; margin-top: 7px; line-height: 1; font-variant-numeric: tabular-nums; }
 .kpi .k-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; letter-spacing: -0.02em; }
+/* Estimate-mode used/limit counts, on their own line above the reset. */
+.kpi .k-sub .k-cnt { display: block; color: var(--fg); font-weight: 600; }
 /* Ring gauge — circular progress arc around the KPI headline number. The arc
    length is driven by --pct (0–100). Provider panels mount when their tab
    becomes active, so the from-only keyframe (implicit `to` = the computed
@@ -214,23 +216,6 @@ body {
 .fill.warn { background: linear-gradient(90deg, var(--warn), oklch(82% 0.13 70)); }
 .fill.danger { background: linear-gradient(90deg, var(--danger), oklch(72% 0.16 35)); }
 
-/* meters */
-.meters { display: flex; flex-direction: column; gap: 10px; }
-.meter { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
-.meter-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; gap: 8px; }
-.meter-top .ml { font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; }
-.meter-top .ml .ms { font-family: var(--mono); font-size: 9.5px; color: var(--faint); font-weight: 400; margin-left: 6px; letter-spacing: -0.02em; }
-.meter-top .reset { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: -0.02em; white-space: nowrap; }
-.meter-top .reset b { color: var(--fg); font-weight: 600; }
-.meter-foot { display: flex; justify-content: space-between; margin-top: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: -0.02em; }
-.meter-foot .mu { color: var(--muted); }
-.meter-foot .mu b { color: var(--fg); font-weight: 600; }
-.meter-foot .ml2 { color: var(--muted); }
-.meter-foot .live-tag { color: var(--ok); font-weight: 600; letter-spacing: -0.01em; }
-.meter.ok .ml2 b { color: var(--ok); }
-.meter.warn .ml2 b { color: var(--warn); }
-.meter.danger .ml2 b { color: var(--danger); }
-
 /* hover popover (separate borderless window shown on tray hover) */
 .hover-pop { display: flex; flex-direction: column; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 13px 13px; overflow: hidden; }
 .hp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
@@ -277,15 +262,11 @@ body {
 
 /* overview draw-in animations — play once when the provider panel mounts
    (tab focus / auto-rotate). Implicit `to` = the inline-style dimension, so
-   bars sweep from zero to their value. Stagger: meters/models use nth-child
-   (the Meter component has no index prop); week chart uses --i (index is
-   available in its map). Don't unify — the two approaches serve different
-   component shapes. */
+   bars sweep from zero to their value. Stagger: models use nth-child; week
+   chart uses --i (index is available in its map). Don't unify — the two
+   approaches serve different component shapes. */
 @keyframes meter-in { from { width: 0; } }
 @keyframes bar-in { from { height: 0; } }
-.meters .meter:nth-child(2) .fill { animation-delay: .08s; }
-.meters .meter:nth-child(3) .fill { animation-delay: .16s; }
-.meters .meter:nth-child(4) .fill { animation-delay: .24s; }
 .models .model-row:nth-child(2) .mfill { animation-delay: .07s; }
 .models .model-row:nth-child(3) .mfill { animation-delay: .14s; }
 .models .model-row:nth-child(4) .mfill { animation-delay: .21s; }

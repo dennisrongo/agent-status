@@ -2,7 +2,6 @@ import { useCallback, useLayoutEffect, useState, type MouseEvent as ReactMouseEv
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { About } from "./components/About";
-import { Meter } from "./components/Meter";
 import { RingGauge } from "./components/RingGauge";
 import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -338,35 +337,25 @@ export default function App() {
                       <p className="connect-sub">{limits.estimateNote}</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="kpis">
-                        {limits.buckets.slice(0, 3).map((b) => (
-                          <div className="kpi" key={b.name}>
-                            <div className="k-label">{tileLabel(b.name)}</div>
-                            <RingGauge pct={b.usedPct} status={b.status}>
-                              <div className="k-num">{b.usedPct}%</div>
-                            </RingGauge>
-                            <div className="k-sub">resets {b.reset}</div>
+                    <div className="kpis">
+                      {limits.buckets.slice(0, 3).map((b) => (
+                        <div className="kpi" key={b.name}>
+                          <div className="k-label">{tileLabel(b.name)}</div>
+                          <RingGauge pct={b.usedPct} status={b.status}>
+                            <div className="k-num">{b.usedPct}%</div>
+                          </RingGauge>
+                          {/* Absolute used/limit counts — estimate mode only; live reports just the %. */}
+                          <div className="k-sub">
+                            {!b.live && b.usedFmt && b.limitFmt !== "—" && (
+                              <span className="k-cnt">
+                                {b.usedFmt} / {b.limitFmt}
+                              </span>
+                            )}
+                            resets {b.reset}
                           </div>
-                        ))}
-                      </div>
-
-                      {!minimal && (
-                        <>
-                          <div className="sec-head">
-                            <h2>Usage</h2>
-                            <span className="meta">
-                              {limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`}
-                            </span>
-                          </div>
-                          <div className="meters">
-                            {limits.buckets.map((b) => (
-                              <Meter bucket={b} key={b.name} />
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </>
+                        </div>
+                      ))}
+                    </div>
                   )}
 
                   {!minimal && (
@@ -619,70 +608,24 @@ export default function App() {
   );
 }
 
-/**
- * Quota windows for an API-key vendor (GLM, Copilot), shown the same way as
- * Claude's overview: glanceable brand-tinted tiles up top, then status-colored
- * meter bars under a "Usage" head. Shared so every provider renders identically.
- */
-function QuotaMeters({
-  windows,
-  srcLabel,
-  minimal,
-  meta,
-}: {
-  windows: VendorKeyVal[];
-  srcLabel: string;
-  minimal: boolean;
-  meta?: string;
-}) {
+/** Quota windows for an API-key vendor (GLM, Copilot, Alibaba) as glanceable ring-gauge tiles. */
+function QuotaMeters({ windows }: { windows: VendorKeyVal[] }) {
   if (windows.length === 0) return null;
   return (
-    <>
-      <div
-        className="kpis"
-        style={{ gridTemplateColumns: `repeat(${windows.length}, 1fr)` }}
-      >
-        {windows.map((d, i) => (
-          <div className="kpi" key={`${d.label}-${i}`}>
-            <div className="k-label">{d.label}</div>
-            <RingGauge pct={d.pct ?? 0} status={d.status ?? "ok"}>
-              <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
-            </RingGauge>
-            <div className="k-sub">{d.value || "live"}</div>
-          </div>
-        ))}
-      </div>
-      {!minimal && (
-        <>
-          <div className="sec-head">
-            <h2>Usage</h2>
-            <span className="meta">{meta ?? `live · ${srcLabel}`}</span>
-          </div>
-          <div className="meters">
-            {windows.map((d, i) => (
-              <div className={`meter ${d.status ?? "ok"}`} key={`${d.label}-${i}`}>
-                <div className="meter-top">
-                  <span className="ml">{d.label}</span>
-                  {d.value && <span className="reset">{d.value}</span>}
-                </div>
-                <div className="track">
-                  <div
-                    className={`fill ${d.status ?? "ok"}`}
-                    style={{ width: `${d.pct ?? 0}%` }}
-                  />
-                </div>
-                <div className="meter-foot">
-                  <span className="mu live-tag">● live · {srcLabel}</span>
-                  <span className="ml2">
-                    <b>{Math.round(d.pct ?? 0)}%</b> used
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </>
+    <div
+      className="kpis"
+      style={{ gridTemplateColumns: `repeat(${windows.length}, 1fr)` }}
+    >
+      {windows.map((d, i) => (
+        <div className="kpi" key={`${d.label}-${i}`}>
+          <div className="k-label">{d.label}</div>
+          <RingGauge pct={d.pct ?? 0} status={d.status ?? "ok"}>
+            <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
+          </RingGauge>
+          <div className="k-sub">{d.value || "live"}</div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -698,8 +641,8 @@ function GlmOverview({
   onConnect: () => void;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
-  // Quota windows carry a pct + status, so they render as glanceable tiles and
-  // status-colored meter bars, mirroring Claude's overview.
+  // Quota windows carry a pct + status, so they render as glanceable
+  // ring-gauge tiles, mirroring Claude's overview.
   const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
   // Per-tool breakdown rows (usageDetails) are plain text — no pct.
   const toolRows = vendor?.detail.filter((d) => d.pct == null) ?? [];
@@ -708,12 +651,7 @@ function GlmOverview({
     <>
       {live && vendor ? (
         <>
-          <QuotaMeters
-            windows={windows}
-            srcLabel="z.ai"
-            minimal={minimal}
-            meta="coding plan · via API key"
-          />
+          <QuotaMeters windows={windows} />
           {!minimal && toolRows.length > 0 && (
             <>
               <div className="sec-head">
@@ -789,7 +727,7 @@ function CopilotOverview({
   const live = Boolean(vendor?.configured && vendor.ok);
   const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
   // Plan / Resets / Overage (and an "unlimited" plan's premium-requests line)
-  // carry no percentage, so they show as plain rows beneath the meters.
+  // carry no percentage, so they show as plain rows beneath the quota tiles.
   const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
 
   return (
@@ -797,12 +735,7 @@ function CopilotOverview({
       {live && vendor ? (
         <>
           {windows.length > 0 ? (
-            <QuotaMeters
-              windows={windows}
-              srcLabel="Copilot"
-              minimal={minimal}
-              meta="live · via Copilot token"
-            />
+            <QuotaMeters windows={windows} />
           ) : (
             // Unlimited plan: no quota to meter, so show the headline instead.
             <div className="kpis glm-kpis">
@@ -871,12 +804,7 @@ function AlibabaOverview({
       {live && vendor ? (
         <>
           {windows.length > 0 ? (
-            <QuotaMeters
-              windows={windows}
-              srcLabel="Bailian"
-              minimal={minimal}
-              meta="live · token plan"
-            />
+            <QuotaMeters windows={windows} />
           ) : windowRows.length > 0 ? (
             <div
               className="kpis"
@@ -974,7 +902,7 @@ function AlibabaOverview({
  * Shown in place of all Claude usage when there's no usable Claude Code login —
  * either none at all (signed out) or one that's expired. A present, valid login
  * is required to show Claude stats now (local estimate included), so this stands
- * in for the meters / tiles / history with a single connect-or-reconnect prompt.
+ * in for the tiles / history with a single connect-or-reconnect prompt.
  */
 function ClaudeConnectPrompt({
   expired,
