@@ -47,6 +47,8 @@ export function useUsage() {
   const bailianStatusCmd = useTauriCommand<BailianCliStatus>("bailian_cli_status");
   const bailianInstallCmd = useTauriCommand<string>("install_bailian_cli");
   const bailianLoginCmd = useTauriCommand<string>("bailian_cli_login");
+  const bailianLogoutCmd = useTauriCommand<string>("bailian_cli_logout");
+  const bailianSetOpenApiCmd = useTauriCommand<string>("bailian_set_open_api");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -109,6 +111,17 @@ export function useUsage() {
   const loginBailian = useCallback(
     () => bailianLoginCmd.execute(),
     [bailianLoginCmd],
+  );
+
+  const logoutBailian = useCallback(
+    () => bailianLogoutCmd.execute(),
+    [bailianLogoutCmd],
+  );
+
+  const setBailianOpenApi = useCallback(
+    (accessKeyId: string, accessKeySecret: string) =>
+      bailianSetOpenApiCmd.execute({ accessKeyId, accessKeySecret }),
+    [bailianSetOpenApiCmd],
   );
 
   const setPlan = useCallback(
@@ -314,6 +327,12 @@ export function useUsage() {
     loginBailian,
     bailianLoginBusy: bailianLoginCmd.isLoading,
     bailianLoginError: bailianLoginCmd.error,
+    logoutBailian,
+    bailianLogoutBusy: bailianLogoutCmd.isLoading,
+    bailianLogoutError: bailianLogoutCmd.error,
+    setBailianOpenApi,
+    bailianSetOpenApiBusy: bailianSetOpenApiCmd.isLoading,
+    bailianSetOpenApiError: bailianSetOpenApiCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,

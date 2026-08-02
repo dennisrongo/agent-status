@@ -3,6 +3,39 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
+/** Clickable info icon that opens a popover with help text. Stays open until
+ * the user clicks outside — so they can follow multi-step instructions. */
+function InfoTip({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <span className="info-wrap" ref={ref}>
+      <button
+        className={`info-icon${open ? " open" : ""}`}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}
+        tabIndex={-1}
+        aria-label="More info"
+      >
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="8" cy="8" r="6.5" />
+          <path d="M8 7v3.5M8 5h.01" />
+        </svg>
+      </button>
+      {open && <span className="info-pop">{children}</span>}
+    </span>
+  );
+}
+
 interface Props {
   settings: SettingsView;
   setApiKey: (provider: "glm" | "anthropic", key: string) => Promise<SettingsView | null>;
@@ -39,6 +72,12 @@ interface Props {
   loginBailian: () => Promise<string | null>;
   bailianLoginBusy: boolean;
   bailianLoginError: string | null;
+  logoutBailian: () => Promise<string | null>;
+  bailianLogoutBusy: boolean;
+  bailianLogoutError: string | null;
+  setBailianOpenApi: (accessKeyId: string, accessKeySecret: string) => Promise<string | null>;
+  bailianSetOpenApiBusy: boolean;
+  bailianSetOpenApiError: string | null;
   /** Authoritative Alibaba status from the usage fetch — reflects the real
    * connection state (incl. a console session that `bl auth status` can't see
    * as expired). Falls back to `bailianStatus()` before the first snapshot. */
@@ -109,6 +148,12 @@ export function Settings({
   loginBailian,
   bailianLoginBusy,
   bailianLoginError,
+  logoutBailian,
+  bailianLogoutBusy,
+  bailianLogoutError,
+  setBailianOpenApi,
+  bailianSetOpenApiBusy,
+  bailianSetOpenApiError,
   alibabaVendorStatus,
   keyError,
 }: Props) {
@@ -144,10 +189,7 @@ export function Settings({
       <div className="key-row">
         <label className="toggle-row">
           <span>
-            <span className="key-label">Minimal view</span>
-            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
-              Show only the headline stats on Overview and shrink the window to fit — no scrolling. Off shows the full breakdown.
-            </span>
+            <span className="key-label">Minimal view<InfoTip>Show only the headline stats on Overview and shrink the window to fit — no scrolling. Off shows the full breakdown.</InfoTip></span>
           </span>
           <input
             type="checkbox"
@@ -159,11 +201,8 @@ export function Settings({
       </div>
       <div className="key-row">
         <div className="key-top">
-          <span className="key-label">Tray hover provider</span>
+          <span className="key-label">Tray hover provider<InfoTip>Which provider's usage the menu-bar hover popover previews.</InfoTip></span>
         </div>
-        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
-          Which provider's usage the menu-bar hover popover previews.
-        </span>
         <select
           className="interval-select"
           value={settings.tooltipProvider}
@@ -177,11 +216,8 @@ export function Settings({
       </div>
       <div className="key-row">
         <div className="key-top">
-          <span className="key-label">Window mode</span>
+          <span className="key-label">Window mode<InfoTip>Dock anchors the window to the tray icon. Float lets you drag it anywhere — including across monitors.</InfoTip></span>
         </div>
-        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
-          Dock anchors the window to the tray icon. Float lets you drag it anywhere — including across monitors.
-        </span>
         <select
           className="interval-select"
           value={settings.windowMode}
@@ -220,10 +256,7 @@ export function Settings({
       <div className="key-row">
         <label className="toggle-row">
           <span>
-            <span className="key-label">Rotate provider tabs</span>
-            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
-              Cycle through visible providers on the Overview automatically so you can glance at each one without switching tabs.
-            </span>
+            <span className="key-label">Rotate provider tabs<InfoTip>Cycle through visible providers on the Overview automatically so you can glance at each one without switching tabs.</InfoTip></span>
           </span>
           <input
             type="checkbox"
@@ -259,10 +292,7 @@ export function Settings({
       <div className="key-row">
         <label className="toggle-row">
           <span>
-            <span className="key-label">Launch at login</span>
-            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
-              Start Agent Usage Monitor automatically when you log in.
-            </span>
+            <span className="key-label">Launch at login<InfoTip>Start Agent Usage Monitor automatically when you log in.</InfoTip></span>
           </span>
           <input
             type="checkbox"
@@ -278,13 +308,6 @@ export function Settings({
       <div className="sec-head">
         <h2>Overview providers</h2>
         <span className="meta">{checkedCount}/{MAX_OVERVIEW} selected</span>
-      </div>
-      <div className="key-row">
-        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-          Choose which providers appear in the Overview tab. Up to {MAX_OVERVIEW} can
-          be shown at once — uncheck one to make room for another. Detected
-          providers are pre-selected.
-        </span>
       </div>
       {OVERVIEW_PROVIDERS.map((p) => {
         const isChecked = !hidden.includes(p.id);
@@ -326,10 +349,7 @@ export function Settings({
       <div className="key-row">
         <label className="toggle-row">
           <span>
-            <span className="key-label">Live usage from Claude Code</span>
-            <span className="connect-sub" style={{ margin: "4px 0 0" }}>
-              Reads your Claude Code login to show real session/weekly %. Off = local token estimate.
-            </span>
+            <span className="key-label">Live usage from Claude Code<InfoTip>Reads your Claude Code login to show real session/weekly %. Off = local token estimate.</InfoTip></span>
           </span>
           <input
             type="checkbox"
@@ -387,11 +407,8 @@ export function Settings({
       />
       <div className="key-row">
         <div className="key-top">
-          <span className="key-label">Endpoint</span>
+          <span className="key-label">Endpoint<InfoTip>Usage API endpoint — verify it for your account / region.</InfoTip></span>
         </div>
-        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
-          Usage API endpoint — verify it for your account / region.
-        </span>
         <EndpointRow value={settings.glmEndpoint} onSave={setGlmEndpoint} />
       </div>
 
@@ -407,6 +424,12 @@ export function Settings({
         login={loginBailian}
         loginBusy={bailianLoginBusy}
         loginError={bailianLoginError}
+        logout={logoutBailian}
+        logoutBusy={bailianLogoutBusy}
+        logoutError={bailianLogoutError}
+        setOpenApi={setBailianOpenApi}
+        setOpenApiBusy={bailianSetOpenApiBusy}
+        setOpenApiError={bailianSetOpenApiError}
         vendorStatus={alibabaVendorStatus}
       />
 
@@ -480,15 +503,30 @@ function ClaudeSignIn({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">Claude login</span>
+        <span className="key-label">Claude login<InfoTip>
+          {expired
+            ? <p style={{ margin: "0 0 8px" }}>Your Claude login expired — reconnect to restore live usage.</p>
+            : <p style={{ margin: "0 0 8px" }}>Connect your <strong>Claude Pro/Max</strong> account for live session &amp; weekly usage.</p>}
+          <div className="info-steps">
+            <div className="info-step">
+              <span className="info-step-num">1</span>
+              <span className="info-step-body">Click <strong>Connect Claude</strong> — a browser window opens to Anthropic.</span>
+            </div>
+            <div className="info-step">
+              <span className="info-step-num">2</span>
+              <span className="info-step-body">Approve the authorization in your browser.</span>
+            </div>
+            <div className="info-step">
+              <span className="info-step-num">3</span>
+              <span className="info-step-body">Paste the code shown back here and click <strong>Finish</strong>.</span>
+            </div>
+          </div>
+          <p style={{ margin: "8px 0 0", fontSize: "10.5px", color: "var(--faint)" }}>
+            Shares the <code>claude</code> CLI login — connecting signs it in too.
+          </p>
+        </InfoTip></span>
         <span className="key-status">{expired ? "⚠ expired" : "○ not connected"}</span>
       </div>
-      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-        {expired
-          ? "Your Claude login expired — reconnect to restore live usage."
-          : "Connect your Claude Pro/Max account for live session & weekly usage."}{" "}
-        Shares the Claude Code CLI login, so connecting signs <code>claude</code> in too.
-      </span>
       {awaiting ? (
         <>
           <span className="connect-sub" style={{ margin: "0 0 6px" }}>
@@ -563,15 +601,25 @@ function ClaudeSignOut({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">Claude login</span>
+        <span className="key-label">Claude login<InfoTip>
+          <p style={{ margin: "0 0 8px" }}>Disconnecting removes the <strong>shared Claude Code login</strong>. What happens:</p>
+          <div className="info-steps">
+            <div className="info-step">
+              <span className="info-step-num" style={{ background: "color-mix(in oklch, var(--danger) 15%, var(--surface-2))", borderColor: "color-mix(in oklch, var(--danger) 30%, var(--border-2))", color: "var(--danger)" }}>!</span>
+              <span className="info-step-body">The <code>claude</code> CLI is signed out — reconnect here or with <code>claude /login</code>.</span>
+            </div>
+            <div className="info-step">
+              <span className="info-step-num" style={{ color: "var(--ok)", background: "color-mix(in oklch, var(--ok) 12%, var(--surface-2))", borderColor: "color-mix(in oklch, var(--ok) 25%, var(--border-2))" }}>✓</span>
+              <span className="info-step-body"><strong>Claude Desktop</strong> app is not affected — it has its own separate login.</span>
+            </div>
+            <div className="info-step">
+              <span className="info-step-num" style={{ color: "var(--ok)", background: "color-mix(in oklch, var(--ok) 12%, var(--surface-2))", borderColor: "color-mix(in oklch, var(--ok) 25%, var(--border-2))" }}>✓</span>
+              <span className="info-step-body">A running <code>claude</code> session keeps working until you restart it.</span>
+            </div>
+          </div>
+        </InfoTip></span>
         <span className="key-status set">● connected</span>
       </div>
-      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-        Disconnecting removes the Claude Code login (shared with the CLI) — connect
-        again here or with <code>claude /login</code>. The Claude Desktop app has its own
-        separate login and isn’t affected; a running <code>claude</code> session keeps
-        working until you restart it.
-      </span>
       {confirm ? (
         <div style={{ display: "flex", gap: 6 }}>
           <button
@@ -624,16 +672,11 @@ function KeyRow({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">{label}</span>
+        <span className="key-label">{label}{sub && <InfoTip>{sub}</InfoTip>}</span>
         <span className={`key-status ${isSet ? "set" : ""}`}>
           {isSet ? "● set" : "○ not set"}
         </span>
       </div>
-      {sub && (
-        <span className="connect-sub" style={{ margin: "0 0 6px" }}>
-          {sub}
-        </span>
-      )}
       <div className="key-input">
         <input
           type="password"
@@ -763,7 +806,7 @@ function CopilotConnect({
   // (connected / not connected), instead of only showing it when connected.
   const header = (
     <div className="key-top">
-      <span className="key-label">Copilot login</span>
+      <span className="key-label">Copilot login<InfoTip>Usage is read automatically from your editor or <code>gh</code> CLI Copilot token. Only connect here if no token is found automatically. Authorizes via GitHub's device flow using VS Code Copilot's client ID.</InfoTip></span>
       <span className={`key-status ${connected ? "set" : ""}`}>
         {connected ? "● connected" : "○ not connected"}
       </span>
@@ -774,9 +817,6 @@ function CopilotConnect({
     return (
       <div className="key-row">
         {header}
-        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-          Using the Copilot token you connected here.
-        </span>
         <button
           className="btn"
           disabled={busy}
@@ -816,18 +856,9 @@ function CopilotConnect({
   return (
     <div className="key-row">
       {header}
-      <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-        Usage is read automatically from your editor / <code>gh</code> CLI Copilot
-        token. Only connect here if no token is found automatically.
-      </span>
       <button className="btn primary" disabled={busy} onClick={begin}>
         {busy ? "Starting…" : "Connect GitHub Copilot"}
       </button>
-      <span className="connect-sub" style={{ margin: "8px 0 0", color: "var(--faint)" }}>
-        Authorizes via GitHub’s device flow using VS Code Copilot’s client ID,
-        with <code>read:user</code> scope — the session shows as “VS Code” in your
-        GitHub audit log. Disconnect any time above.
-      </span>
       {msg && <p className="key-err">{msg}</p>}
     </div>
   );
@@ -841,6 +872,12 @@ function BailianCli({
   login,
   loginBusy,
   loginError,
+  logout,
+  logoutBusy,
+  logoutError,
+  setOpenApi,
+  setOpenApiBusy,
+  setOpenApiError,
   vendorStatus,
 }: {
   status: () => Promise<BailianCliStatus | null>;
@@ -850,16 +887,18 @@ function BailianCli({
   login: () => Promise<string | null>;
   loginBusy: boolean;
   loginError: string | null;
-  /** Authoritative Alibaba status from the usage fetch. `bl auth status` only
-   * reports whether *some* credential is present — it can't see that the
-   * console session has expired while a separate API key is still on file, so
-   * only a usage call discovers that. When a snapshot is available it wins;
-   * before the first collect arrives we fall back to `bl auth status`. */
+  logout: () => Promise<string | null>;
+  logoutBusy: boolean;
+  logoutError: string | null;
+  setOpenApi: (id: string, secret: string) => Promise<string | null>;
+  setOpenApiBusy: boolean;
+  setOpenApiError: string | null;
   vendorStatus?: VendorStatus;
 }) {
   const [cli, setCli] = useState<BailianCliStatus | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -891,6 +930,26 @@ function BailianCli({
     }
   };
 
+  const doLogout = async () => {
+    setMsg(null);
+    const result = await logout();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doSetOpenApi = async (id: string, secret: string) => {
+    setMsg(null);
+    const result = await setOpenApi(id, secret);
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
   if (checking) {
     return (
       <div className="key-row">
@@ -913,13 +972,9 @@ function BailianCli({
     return (
       <div className="key-row">
         <div className="key-top">
-          <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+          <span className="key-label">Bailian CLI (<code>bl</code>)<InfoTip>Reads your Alibaba Cloud Model Studio usage. Requires Node.js ≥ 22.12 and npm.</InfoTip></span>
           <span className="key-status">○ not installed</span>
         </div>
-        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-          The Bailian CLI reads your Alibaba Cloud Model Studio usage. Requires
-          Node.js ≥ 22.12 and npm.
-        </span>
         <button className="btn primary" disabled={installBusy} onClick={() => void doInstall()}>
           {installBusy ? "Installing…" : "Install Bailian CLI"}
         </button>
@@ -936,17 +991,17 @@ function BailianCli({
     return (
       <div className="key-row">
         <div className="key-top">
-          <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+          <span className="key-label">Bailian CLI (<code>bl</code>)<InfoTip>{expired
+            ? "Your console session has expired. Sign in again to refresh it — a browser window will open."
+            : "Sign in to connect your Alibaba Cloud account — a browser window will open to complete the login."}</InfoTip></span>
           <span className="key-status">{expired ? "○ session expired" : "○ not authenticated"}</span>
         </div>
-        <span className="connect-sub" style={{ margin: "0 0 8px" }}>
-          {expired
-            ? "Your Alibaba Cloud console session has expired. Sign in again to refresh it — a browser window will open to complete the login."
-            : "Installed. Sign in to connect your Alibaba Cloud account — a browser window will open to complete the login."}
-        </span>
         <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
           {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
         </button>
+        {expired && !cli?.hasOpenApi && (
+          <AkSkForm onSubmit={doSetOpenApi} busy={setOpenApiBusy} error={setOpenApiError} />
+        )}
         {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
         {loginError && <p className="key-err">{loginError}</p>}
       </div>
@@ -957,12 +1012,115 @@ function BailianCli({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">Bailian CLI (<code>bl</code>)</span>
+        <span className="key-label">Bailian CLI (<code>bl</code>)<InfoTip><AkSkStepsContent /></InfoTip></span>
         <span className="key-status set">● connected</span>
       </div>
       <span className="connect-sub" style={{ margin: "0 0 6px" }}>
         {cli?.authHint ?? "Authenticated via Bailian CLI."}
       </span>
+      {!cli?.hasOpenApi ? (
+        <AkSkForm onSubmit={doSetOpenApi} busy={setOpenApiBusy} error={setOpenApiError} />
+      ) : (
+        <span className="connect-sub" style={{ margin: "4px 0 0", color: "var(--faint)" }}>
+          Auto-refresh enabled — the CLI will keep your session alive.
+        </span>
+      )}
+      <div style={{ marginTop: 8 }}>
+        {confirmLogout ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn"
+              disabled={logoutBusy}
+              onClick={async () => {
+                await doLogout();
+                setConfirmLogout(false);
+              }}
+            >
+              {logoutBusy ? "Disconnecting…" : "Confirm disconnect"}
+            </button>
+            <button className="btn" disabled={logoutBusy} onClick={() => setConfirmLogout(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="btn" onClick={() => setConfirmLogout(true)}>
+            Disconnect
+          </button>
+        )}
+        {logoutError && <p className="key-err">{logoutError}</p>}
+      </div>
+    </div>
+  );
+}
+
+function AkSkStepsContent() {
+  return (
+    <div className="info-steps">
+      <div className="info-step">
+        <span className="info-step-num">1</span>
+        <span className="info-step-body">
+          <a href="#" onClick={(e) => { e.preventDefault(); void invoke("open_url", { url: "https://ram.console.aliyun.com/users" }); }}>
+            Open RAM console
+          </a>{" "}
+          → <strong>Create User</strong> → check <strong>Permanent AccessKey</strong> → copy the ID &amp; Secret shown.
+        </span>
+      </div>
+      <div className="info-step">
+        <span className="info-step-num">2</span>
+        <span className="info-step-body">
+          On the user's <strong>Permissions</strong> tab → <strong>Grant Permission</strong> → attach both policies:<br />
+          <code>AliyunModelStudioFullAccess</code><br />
+          <code>AliyunBailianFullAccess</code>
+        </span>
+      </div>
+      <div className="info-step">
+        <span className="info-step-num">3</span>
+        <span className="info-step-body">
+          Paste the keys below and click <strong>Enable auto-refresh</strong>.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AkSkForm({ onSubmit, busy, error }: {
+  onSubmit: (id: string, secret: string) => Promise<void>;
+  busy: boolean;
+  error: string | null;
+}) {
+  const [akId, setAkId] = useState("");
+  const [akSecret, setAkSecret] = useState("");
+  const canSave = akId.trim().length > 0 && akSecret.trim().length > 0 && !busy;
+
+  return (
+    <div style={{ margin: "8px 0 0" }}>
+      <div className="key-input" style={{ marginBottom: 4 }}>
+        <input
+          type="text"
+          placeholder="AccessKey ID (LTAI5t…)"
+          value={akId}
+          onChange={(e) => setAkId(e.target.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </div>
+      <div className="key-input" style={{ marginBottom: 6 }}>
+        <input
+          type="password"
+          placeholder="AccessKey Secret"
+          value={akSecret}
+          onChange={(e) => setAkSecret(e.target.value)}
+          autoComplete="off"
+        />
+      </div>
+      <button
+        className="btn primary"
+        disabled={!canSave}
+        onClick={() => void onSubmit(akId.trim(), akSecret.trim())}
+      >
+        {busy ? "Saving…" : "Enable auto-refresh"}
+      </button>
+      {error && <p className="key-err">{error}</p>}
     </div>
   );
 }

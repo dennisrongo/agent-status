@@ -82,7 +82,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         let copilot_due = guard.copilot_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::COPILOT_MIN_SECS
         });
-        // The Bailian CLI shell-out runs five sequential Node.js subprocesses,
+        // The Bailian CLI shell-out runs a single Node.js subprocesses,
         // so polling it on every collect cycle would saturate the process with
         // ~16s of blocking work per tick. Throttle it the same way and serve the
         // last good reading (bounded by ALIBABA_CACHE_MAX_SECS) in between.
@@ -262,7 +262,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // async HTTP fetches.
     //
     // Throttle the Bailian fetch to once per ALIBABA_MIN_SECS — each one spawns
-    // five sequential Node.js subprocess calls (~16s), so polling on every
+    // a single Node.js subprocess calls (~16s), so polling on every
     // collect cycle would saturate the process. When throttled we serve the
     // cached reading (already bounded by ALIBABA_CACHE_MAX_SECS at the read
     // above), falling back to the previous snapshot's status, and skip the
@@ -296,7 +296,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                     // terminal, not transient: drop the stale `last_good` cache so
                     // the Overview/Settings show the real "session expired" state
                     // instead of serving old "connected" data, and stamp the
-                    // throttle so we don't pay for five doomed `bl` subprocesses
+                    // throttle so we don't pay for six doomed `bl` subprocesses
                     // on every collect tick until the user re-logs-in.
                     (fetched, None, true, true)
                 } else if fetched.configured {
@@ -534,7 +534,7 @@ pub async fn claude_login_finish(app: AppHandle, code: String) -> Result<UsageSn
 
     // Return immediately with the current snapshot patched to reflect the new
     // login so the UI flips to "connected" without waiting for the full collect
-    // (which can take 15-20 s when the Alibaba CLI's five sequential
+    // (which can take 15-20 s when the Alibaba CLI's a single
     // subprocesses are involved).  The background collect broadcasts fresh
     // usage data via `usage-updated` when it finishes.
     let patched = {
@@ -1145,7 +1145,7 @@ pub async fn bailian_cli_status() -> Result<alibaba::CliStatus, String> {
 /// Install the Bailian CLI globally via npm. Blocking — the UI shows a spinner.
 /// After a successful install we clear the throttle and kick off a background
 /// collect so `detection.alibaba` flips to true (making the tab appear) without
-/// blocking the response on five sequential `bl` subprocesses.
+/// blocking the response on a single `bl` subprocesses.
 #[tauri::command]
 pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
     let msg = tokio::task::spawn_blocking(alibaba::install)
@@ -1160,10 +1160,43 @@ pub async fn install_bailian_cli(app: AppHandle) -> Result<String, String> {
     msg
 }
 
+/// Run `bl auth logout` — clears all stored Alibaba credentials.
+#[tauri::command]
+pub async fn bailian_cli_logout(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(alibaba::logout)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_alibaba_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+/// Save OpenAPI AK/SK credentials for automatic console session refresh.
+/// The CLI stores them in its own config — this app never persists them.
+#[tauri::command]
+pub async fn bailian_set_open_api(
+    app: AppHandle,
+    access_key_id: String,
+    access_key_secret: String,
+) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(move || {
+        alibaba::set_open_api(&access_key_id, &access_key_secret)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_alibaba_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
 /// Run `bl auth login --console` — opens the browser for the user to
 /// authenticate with Alibaba Cloud. Blocking — the UI shows a spinner. After a
 /// successful login we clear the throttle and kick off a background collect so
-/// the Alibaba card populates without making the user wait for five sequential
+/// the Alibaba card populates without making the user wait for a single
 /// `bl` subprocesses (~16 s) before the command returns.
 #[tauri::command]
 pub async fn bailian_cli_login(app: AppHandle) -> Result<String, String> {
@@ -1194,7 +1227,7 @@ fn clear_alibaba_throttle(app: &AppHandle) -> Result<(), String> {
 /// `usage-updated`.  Login / connect commands call this instead of awaiting
 /// `collect()` inline so they can return immediately — the UI flips to
 /// "connected" right away while the full vendor fetch (which can take 15-20 s
-/// when the Alibaba CLI's five sequential subprocesses are involved) runs
+/// when the Alibaba CLI's a single subprocesses are involved) runs
 /// without blocking the response.  The frontend already listens for
 /// `usage-updated` and applies the snapshot when it arrives.
 fn spawn_collect_and_broadcast(app: &AppHandle) {

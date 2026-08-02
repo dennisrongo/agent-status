@@ -136,6 +136,8 @@ pub fn run() {
             commands::bailian_cli_status,
             commands::install_bailian_cli,
             commands::bailian_cli_login,
+            commands::bailian_cli_logout,
+            commands::bailian_set_open_api,
             commands::open_url,
             commands::restart_after_update,
         ])

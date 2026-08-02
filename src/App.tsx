@@ -64,6 +64,12 @@ export default function App() {
     loginBailian,
     bailianLoginBusy,
     bailianLoginError,
+    logoutBailian,
+    bailianLogoutBusy,
+    bailianLogoutError,
+    setBailianOpenApi,
+    bailianSetOpenApiBusy,
+    bailianSetOpenApiError,
     isLoading,
     error,
     keyError,
@@ -573,6 +579,12 @@ export default function App() {
             loginBailian={loginBailian}
             bailianLoginBusy={bailianLoginBusy}
             bailianLoginError={bailianLoginError}
+            logoutBailian={logoutBailian}
+            bailianLogoutBusy={bailianLogoutBusy}
+            bailianLogoutError={bailianLogoutError}
+            setBailianOpenApi={setBailianOpenApi}
+            bailianSetOpenApiBusy={bailianSetOpenApiBusy}
+            bailianSetOpenApiError={bailianSetOpenApiError}
             alibabaVendorStatus={snapshot?.vendor?.alibaba}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks

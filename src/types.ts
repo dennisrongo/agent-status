@@ -156,6 +156,9 @@ export interface BailianCliStatus {
   installed: boolean;
   authenticated: boolean;
   authHint: string | null;
+  /** OpenAPI AK/SK credentials are configured — the CLI can auto-refresh the
+   * console session token, so the user won't need to re-login manually. */
+  hasOpenApi: boolean;
 }
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";

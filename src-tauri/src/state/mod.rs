@@ -116,7 +116,7 @@ pub struct AppState {
     /// When `alibaba_last_good` was captured.
     pub alibaba_last_good_at: Option<DateTime<Utc>>,
     /// When the Bailian CLI fetch was last *attempted*. Throttles it (see
-    /// `ALIBABA_MIN_SECS`) because each fetch spawns five sequential `bl`
+    /// `ALIBABA_MIN_SECS`) because each fetch spawns a single `bl`
     /// (Node.js) subprocess calls — polling on every collect cycle would saturate
     /// the process with blocking work. Between fetches we serve the cached
     /// reading, matching the Copilot and Claude-live throttles.
@@ -145,7 +145,7 @@ pub const LIVE_CLAUDE_REFRESH_MIN_SECS: i64 = 60;
 pub const COPILOT_MIN_SECS: i64 = 120;
 
 /// Minimum seconds between Bailian CLI fetches. Each `alibaba::fetch` shells out
-/// to five sequential `bl` (Node.js) subprocess calls, so polling on every
+/// to a single `bl` (Node.js) subprocess calls, so polling on every
 /// collect cycle — the background loop, window open, and every tray hover —
 /// would saturate the process with ~16s of blocking work per tick. The 5h/7d
 /// Token Plan quota also moves slowly, so we poll gently and serve the cached
