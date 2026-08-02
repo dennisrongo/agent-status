@@ -415,7 +415,6 @@ export default function App() {
             {eff === "alibaba" && (
               <AlibabaOverview
                 vendor={snapshot.vendor?.alibaba}
-                minimal={minimal}
                 onConnect={() => setTab("settings")}
                 onLogin={() => void loginBailian()}
                 loginBusy={bailianLoginBusy}
@@ -780,70 +779,35 @@ function CopilotOverview({
 
 function AlibabaOverview({
   vendor,
-  minimal,
   onConnect,
   onLogin,
   loginBusy,
   loginError,
 }: {
   vendor: VendorStatus | undefined;
-  minimal: boolean;
   onConnect: () => void;
   onLogin: () => void;
   loginBusy: boolean;
   loginError: string | null;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
-  const all = vendor?.detail ?? [];
-  const windows = all.filter((d) => d.pct != null);
-  const windowRows = all.filter((d) => d.pct == null && (d.label === "Today" || d.label === "7 days"));
-  const facts = all.filter((d) => d.pct == null && d.label !== "Today" && d.label !== "7 days");
+  // Bailian detail is only ever percent quota meters — no text rows to render.
+  const windows = (vendor?.detail ?? []).filter((d) => d.pct != null);
 
   return (
     <>
       {live && vendor ? (
-        <>
-          {windows.length > 0 ? (
-            <QuotaMeters windows={windows} />
-          ) : windowRows.length > 0 ? (
-            <div
-              className="kpis"
-              style={{ gridTemplateColumns: `repeat(${windowRows.length}, 1fr)` }}
-            >
-              {windowRows.map((d, i) => (
-                <div className="kpi" key={`${d.label}-${i}`}>
-                  <div className="k-label">{d.label}</div>
-                  <div className="k-num">{d.value.split("·")[0].trim()}</div>
-                  <div className="k-sub">{d.value.split("·").slice(1).join("·").trim() || "live"}</div>
-                </div>
-              ))}
+        windows.length > 0 ? (
+          <QuotaMeters windows={windows} />
+        ) : (
+          <div className="kpis glm-kpis">
+            <div className="kpi">
+              <div className="k-label">{vendor.secondary || "usage"}</div>
+              <div className="k-num">{vendor.primary}</div>
+              <div className="k-sub">live</div>
             </div>
-          ) : (
-            <div className="kpis glm-kpis">
-              <div className="kpi">
-                <div className="k-label">{vendor.secondary || "usage"}</div>
-                <div className="k-num">{vendor.primary}</div>
-                <div className="k-sub">live</div>
-              </div>
-            </div>
-          )}
-          {!minimal && facts.length > 0 && (
-            <>
-              <div className="sec-head">
-                <h2>{windows.length > 0 ? "Stats" : "Usage"}</h2>
-                <span className="meta">live · Bailian CLI</span>
-              </div>
-              <div className="budget" style={{ marginTop: 9 }}>
-                {facts.map((d, i) => (
-                  <div className="budget-foot" key={`${d.label}-${i}`} style={{ marginTop: 0 }}>
-                    <span className="used">{d.label}</span>
-                    <span className="rem">{d.value}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </>
+          </div>
+        )
       ) : vendor?.authExpired ? (
         // The CLI is installed and `bl auth status` reports a credential, but
         // the *console session* has expired — usage calls fail with code 3.
