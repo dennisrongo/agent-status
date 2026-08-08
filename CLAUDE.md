@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Claude, GLM, Copilot, Alibaba Cloud). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
+A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Claude, GLM, Copilot, Alibaba Cloud, Kimi Code). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
 
 ## Commands
 
@@ -61,7 +61,7 @@ Never ask for or set a signing password — there isn't one. If a future release
 src/ (React)                         src-tauri/src/ (Rust)
   hooks/useUsage ─── invoke ───────▶ commands/usage.rs ── collect()
   hooks/useTauriCommand              scanner/   logs → UsageSnapshot
-  components/Meter,WeekChart,…       vendors/   claude·glm·anthropic·copilot
+  components/Meter,WeekChart,…       vendors/   claude·glm·anthropic·copilot·alibaba·kimi
   renders snapshot  ◀── event ────── encryption/ settings/ state/ storage/
                   "usage-updated"    tray.rs    menubar icon + dropdown
                                        ▲ lib.rs: background timer loop
@@ -73,7 +73,7 @@ src/ (React)                         src-tauri/src/ (Rust)
 
 1. Scan local logs off the async runtime via `spawn_blocking` (`scanner::scan_default`) → a base `UsageSnapshot` with **estimated** Claude meters.
 2. Optionally overwrite the Claude meters with **live** `/usage` data (`vendors::claude::fetch`).
-3. Fetch live GLM / Anthropic / Copilot vendor status (network, async).
+3. Fetch live GLM / Anthropic / Copilot / Kimi vendor status (network, async).
 4. Compute `Detection` (which provider tabs to show) and attach the `VendorReport`.
 5. Cache the merged snapshot in `AppState` and return it.
 
@@ -92,7 +92,7 @@ Read [docs/RELEASE.md](docs/RELEASE.md) and the README's data-source table, but 
 
 ### Vendors
 
-Each `vendors/*.rs` client does a thin network call + pure, unit-tested JSON parsing, and **degrades to an error string instead of panicking** — a bad key or unreachable endpoint must never crash the scan. They return a uniform `VendorStatus { configured, ok, error, primary, secondary, detail }`. GLM/z.ai and Anthropic need an API key; Copilot reads a locally-discovered editor/`gh` token by default but prefers an in-app token from the GitHub **device flow** (`copilot_device_start` / `_poll` / `_cancel`, state held in `AppState::pending_copilot_device`).
+Each `vendors/*.rs` client does a thin network call + pure, unit-tested JSON parsing, and **degrades to an error string instead of panicking** — a bad key or unreachable endpoint must never crash the scan. They return a uniform `VendorStatus { configured, ok, error, primary, secondary, detail }`. GLM/z.ai and Anthropic need an API key; Copilot reads a locally-discovered editor/`gh` token by default but prefers an in-app token from the GitHub **device flow** (`copilot_device_start` / `_poll` / `_cancel`, state held in `AppState::pending_copilot_device`); Kimi reads the Kimi Code CLI's stored OAuth login (`~/.kimi-code/credentials/kimi-code.json`, honoring `KIMI_CODE_HOME`) **read-only** — it never touches the CLI's single-use refresh token, so an expired login is surfaced as `auth_expired` and renewed by the CLI itself.
 
 ### Secrets
 

@@ -6,7 +6,7 @@
 
 ### A lightweight **menubar widget** that tracks your AI coding agent usage in real time.
 
-Per-provider usage · live vendor quota · token spend · cost estimates · session history — for **Claude Code, GLM/z.ai, GitHub Copilot, and Alibaba Bailian** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
+Per-provider usage · live vendor quota · token spend · cost estimates · session history — for **Claude Code, GLM/z.ai, GitHub Copilot, Alibaba Bailian, and Kimi Code** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
 
 <br/>
 
@@ -27,8 +27,8 @@ Per-provider usage · live vendor quota · token spend · cost estimates · sess
 
 ## ✨ Features
 
-### One widget, four providers
-A segmented Overview switches between **Claude Code, GLM/z.ai, GitHub Copilot, and Alibaba Bailian** — each with its own usage meters and a live reset countdown.
+### One widget, five providers
+A segmented Overview switches between **Claude Code, GLM/z.ai, GitHub Copilot, Alibaba Bailian, and Kimi Code** — each with its own usage meters and a live reset countdown.
 
 ### The data
 - **Real token counts.** Exact per-request tokens parsed straight from **Claude Code's session logs** (input, output, cache read/write) and **GLM server activity** from local MCP logs; Copilot and Bailian report live quota straight from their APIs.
@@ -36,7 +36,7 @@ A segmented Overview switches between **Claude Code, GLM/z.ai, GitHub Copilot, a
 - **7-day spark chart** + all-time model breakdown + recent-session history, spanning every provider.
 
 ### Live vendor data (optional)
-Connect any provider for real-time quota and usage — **Claude Code** (in-app OAuth sign-in), **GLM/z.ai** (API key), **GitHub Copilot** (device-flow OAuth), or **Alibaba Bailian** (Bailian CLI). All secrets are stored **encrypted and machine-bound**.
+Connect any provider for real-time quota and usage — **Claude Code** (in-app OAuth sign-in), **GLM/z.ai** (API key), **GitHub Copilot** (device-flow OAuth), **Alibaba Bailian** (Bailian CLI), or **Kimi Code** (reads the Kimi Code CLI login). All secrets are stored **encrypted and machine-bound**.
 
 ### Always current
 A Rust timer re-scans and pushes fresh data to the UI — **auto-refresh interval is configurable in Settings (default 30s)**, applied live without a restart. No frozen snapshots.
@@ -65,7 +65,7 @@ Signed auto-updates via the Tauri updater — an in-app "Update & restart" banne
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/providers.png" alt="Providers" width="320"/><br/>
-      <b>Providers</b> — one card per provider (Claude / GLM / Copilot / Alibaba): connection status + live usage
+      <b>Providers</b> — one card per provider (Claude / GLM / Copilot / Alibaba / Kimi): connection status + live usage
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/settings.png" alt="Settings" width="320"/><br/>
@@ -130,6 +130,15 @@ Each provider reports different things. Local data comes from parsing logs on di
 | --- | --- | --- |
 | Usage / quota | Bailian CLI (`bl`) — `bl auth` login | ✅ real (per-account) |
 
+### Kimi Code
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| Weekly / 5h quota | Kimi `coding/v1/usages` (the Kimi Code CLI's own OAuth login) | ✅ real (per-user) |
+| Extra Usage balance | same endpoint (`boosterWallet`) | ✅ real |
+
+> The Kimi login is **read-only** here — the CLI owns the refresh flow, so an expired login is renewed by opening Kimi Code or running `kimi login`.
+
 > GLM, Copilot, and Alibaba expose no per-token local cost — only their live quota meters.
 
 ---
@@ -163,8 +172,8 @@ notarization credentials, verification, universal builds, troubleshooting).
 ## ⚙️ Configuration
 
 - **Auto-refresh interval** — choose 10s / 15s / 30s / 1m / 2m / 5m in Settings (default **30s**); takes effect on the next cycle.
-- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (GLM / Copilot / Alibaba) report their own limits regardless.
-- **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** — all from inside the app.
+- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (GLM / Copilot / Alibaba / Kimi) report their own limits regardless.
+- **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** — all from inside the app. **Kimi Code** needs no in-app setup: it picks up the Kimi Code CLI's login (`kimi login`) automatically.
 - **API keys** (Settings tab) — optional **z.ai** and **Anthropic admin** (`sk-ant-admin…`) keys for live vendor data. (The Anthropic admin key reports org-level cost and is separate from your Claude Code subscription quota.)
 - **z.ai endpoint** — editable; confirm it against your account's billing API.
 - **Overview providers** — hide or show individual providers on the Overview; pick which one the **tray hover popover** shows.

@@ -11,7 +11,7 @@ use crate::process_util::SilentCommand;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
-use crate::vendors::{alibaba, anthropic, claude, copilot, glm, Detection, VendorReport, VendorStatus};
+use crate::vendors::{alibaba, anthropic, claude, copilot, glm, kimi, Detection, VendorReport, VendorStatus};
 
 /// The user code + verification URL the UI shows during a Copilot device-flow
 /// connect. The device code itself stays server-side in `AppState`.
@@ -269,9 +269,13 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // subprocess entirely. This mirrors resolve_copilot's `due` gate.
     let alibaba_handle = alibaba_due.then(|| tokio::task::spawn_blocking(alibaba::fetch));
     // GLM + Anthropic are quick HTTP calls — always fetch them, concurrent with
-    // the Bailian shell-out when one is in flight.
-    let (glm_status, anthropic_status) =
-        tokio::join!(fetch_glm(zai_key, &glm_endpoint, now), fetch_anthropic(anthropic_key));
+    // the Bailian shell-out when one is in flight. Kimi is the same shape (one
+    // quick GET against the CLI's stored OAuth login).
+    let (glm_status, anthropic_status, kimi_status) = tokio::join!(
+        fetch_glm(zai_key, &glm_endpoint, now),
+        fetch_anthropic(anthropic_key),
+        kimi::fetch(now),
+    );
     // Keep the last good Bailian reading through a transient `bl` failure so one
     // bad tick doesn't flip real quota data into a "couldn't read" card. Only a
     // failure with nothing cached (first fetch, or a prolonged outage past
@@ -335,6 +339,10 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         glm: glm_status.configured,
         copilot: copilot_status.configured,
         alibaba: alibaba_status.configured,
+        // A stored login marks Kimi present; failing that, the CLI on PATH means
+        // the user has the tool but hasn't signed in (the tab then shows the
+        // sign-in hint rather than hiding entirely).
+        kimi: kimi_status.configured || kimi::cli_on_path(),
         claude_signed_in: claude_ts.present,
         // "Expired" here means the login genuinely needs a manual reconnect — not
         // merely that the short-lived access token is past its clock. A live
@@ -353,6 +361,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         anthropic: anthropic_status,
         copilot: copilot_status,
         alibaba: alibaba_status,
+        kimi: kimi_status,
     });
 
     {
@@ -703,7 +712,7 @@ pub fn set_minimal_view(
     Ok((&updated).into())
 }
 
-/// Choose which provider the tray hover popover previews ("claude" or "glm").
+/// Choose which provider the tray hover popover previews.
 #[tauri::command]
 pub fn set_tooltip_provider(
     app: AppHandle,
@@ -711,7 +720,7 @@ pub fn set_tooltip_provider(
     provider: String,
 ) -> Result<SettingsView, String> {
     match provider.as_str() {
-        "claude" | "glm" | "copilot" | "alibaba" => {}
+        "claude" | "glm" | "copilot" | "alibaba" | "kimi" => {}
         other => return Err(format!("unknown provider: {other}")),
     }
     let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
@@ -762,7 +771,7 @@ pub fn set_hidden_providers(
 ) -> Result<SettingsView, String> {
     for p in &providers {
         match p.as_str() {
-            "claude" | "glm" | "copilot" | "alibaba" => {}
+            "claude" | "glm" | "copilot" | "alibaba" | "kimi" => {}
             other => return Err(format!("unknown provider: {other}")),
         }
     }

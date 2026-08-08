@@ -82,6 +82,9 @@ interface Props {
    * connection state (incl. a console session that `bl auth status` can't see
    * as expired). Falls back to `bailianStatus()` before the first snapshot. */
   alibabaVendorStatus?: VendorStatus;
+  /** Authoritative Kimi Code status from the usage fetch — configured means the
+   * CLI's OAuth login was found; authExpired means it's stale. */
+  kimiVendorStatus?: VendorStatus;
   keyError: string | null;
 }
 
@@ -103,13 +106,14 @@ const ROTATE_OPTIONS = [
   { secs: 60, label: "60 seconds" },
 ];
 
-const MAX_OVERVIEW = 4;
+const MAX_OVERVIEW = 5;
 
 const OVERVIEW_PROVIDERS = [
   { id: "claude", label: "Claude" },
   { id: "glm", label: "GLM / z.ai" },
   { id: "copilot", label: "GitHub Copilot" },
   { id: "alibaba", label: "Alibaba Cloud" },
+  { id: "kimi", label: "Kimi Code" },
 ] as const;
 
 export function Settings({
@@ -155,6 +159,7 @@ export function Settings({
   bailianSetOpenApiBusy,
   bailianSetOpenApiError,
   alibabaVendorStatus,
+  kimiVendorStatus,
   keyError,
 }: Props) {
   const hidden = settings.hiddenProviders;
@@ -175,6 +180,9 @@ export function Settings({
       case "glm": return settings.glmKeySet ? "API key set" : "no API key";
       case "copilot": return copilotConnected ? "connected" : "not connected";
       case "alibaba": return alibabaVendorStatus?.configured ? "CLI configured" : "not configured";
+      case "kimi": return kimiVendorStatus?.configured
+        ? kimiVendorStatus.authExpired ? "login expired" : "connected"
+        : "not detected";
       default: return "";
     }
   };
@@ -212,6 +220,7 @@ export function Settings({
           <option value="glm">GLM / z.ai</option>
           <option value="copilot">GitHub Copilot</option>
           <option value="alibaba">Alibaba Cloud</option>
+          <option value="kimi">Kimi Code</option>
         </select>
       </div>
       <div className="key-row">
@@ -432,6 +441,47 @@ export function Settings({
         setOpenApiError={bailianSetOpenApiError}
         vendorStatus={alibabaVendorStatus}
       />
+
+      <div className="sec-head">
+        <h2>Kimi Code</h2>
+        <span className="meta">via Kimi Code CLI</span>
+      </div>
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Kimi Code login<InfoTip>
+            <p style={{ margin: "0 0 8px" }}>Reads the OAuth login the <strong>Kimi Code CLI</strong> stores on this machine to show your real weekly &amp; 5-hour quota — nothing to configure here.</p>
+            <div className="info-steps">
+              <div className="info-step">
+                <span className="info-step-num">1</span>
+                <span className="info-step-body">Install Kimi Code and sign in with <code>kimi login</code>.</span>
+              </div>
+              <div className="info-step">
+                <span className="info-step-num">2</span>
+                <span className="info-step-body">This app picks up the login automatically on the next refresh.</span>
+              </div>
+            </div>
+            <p style={{ margin: "8px 0 0", fontSize: "10.5px", color: "var(--faint)" }}>
+              The token is read-only here — an expired login is renewed by opening Kimi Code or running <code>kimi login</code> again.
+            </p>
+          </InfoTip></span>
+          <span className={`key-status ${kimiVendorStatus?.configured && !kimiVendorStatus.authExpired ? "set" : ""}`}>
+            {kimiVendorStatus?.configured
+              ? kimiVendorStatus.authExpired
+                ? "⚠ login expired"
+                : "● connected"
+              : "○ not detected"}
+          </span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0" }}>
+          {kimiVendorStatus?.configured
+            ? kimiVendorStatus.authExpired
+              ? "Open Kimi Code or run kimi login to refresh the expired login."
+              : kimiVendorStatus.ok
+                ? kimiVendorStatus.secondary
+                : (kimiVendorStatus.error ?? "reading usage…")
+            : "Sign in to the Kimi Code CLI (kimi login) — the login is picked up automatically."}
+        </span>
+      </div>
 
       {keyError && <p className="key-err">{keyError}</p>}
 

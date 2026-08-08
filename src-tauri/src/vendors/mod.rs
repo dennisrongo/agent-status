@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod claude;
 pub mod copilot;
 pub mod glm;
+pub mod kimi;
 
 use serde::Serialize;
 
@@ -110,6 +111,7 @@ pub struct VendorReport {
     pub anthropic: VendorStatus,
     pub copilot: VendorStatus,
     pub alibaba: VendorStatus,
+    pub kimi: VendorStatus,
 }
 
 /// Which providers are actually present on this machine, so the UI can hide the
@@ -121,6 +123,8 @@ pub struct VendorReport {
 /// - `copilot`: a Copilot/GitHub OAuth token was found locally (editor token
 ///   file or `gh` CLI) or connected in-app.
 /// - `alibaba`: the Bailian CLI (`bl`) is on PATH.
+/// - `kimi`: a Kimi Code OAuth login exists (`~/.kimi-code/credentials`), or the
+///   `kimi` CLI is on PATH.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detection {
@@ -128,6 +132,7 @@ pub struct Detection {
     pub glm: bool,
     pub copilot: bool,
     pub alibaba: bool,
+    pub kimi: bool,
     /// Whether a Claude Code OAuth login is actually present on this machine
     /// (distinct from `claude`, which is also true when only the CLI is on PATH).
     /// Drives the connected/disconnected control, independent of the live toggle.

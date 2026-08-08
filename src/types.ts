@@ -68,7 +68,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
-  provider: "claude" | "glm" | "copilot" | "alibaba";
+  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi";
 }
 
 export interface Provider {
@@ -114,6 +114,7 @@ export interface VendorReport {
   anthropic: VendorStatus;
   copilot: VendorStatus;
   alibaba: VendorStatus;
+  kimi: VendorStatus;
 }
 
 export interface Detection {
@@ -121,6 +122,7 @@ export interface Detection {
   glm: boolean;
   copilot: boolean;
   alibaba: boolean;
+  kimi: boolean;
   /** A Claude Code OAuth login is present on this machine (independent of the
    * live toggle). Drives the connect/disconnect control. */
   claudeSignedIn: boolean;
@@ -163,7 +165,7 @@ export interface BailianCliStatus {
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba";
+export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi";
 
 export type WindowMode = "dock" | "float";
 

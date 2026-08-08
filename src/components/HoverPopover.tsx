@@ -16,7 +16,7 @@ const WIDTH = 300;
  * Compact preview of one provider's usage, shown in its own borderless window
  * when the cursor hovers the tray icon. Listens for the same `usage-updated`
  * broadcast the main window uses, plus a `hover-provider` event that tells it
- * which provider (Claude, GLM, or Copilot) to show. Fits its window to the rendered
+ * which provider (Claude, GLM, Copilot, Alibaba, or Kimi) to show. Fits its window to the rendered
  * content so spacing is controlled by CSS rather than the OS tooltip.
  */
 export function HoverPopover() {
@@ -41,7 +41,7 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba")
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi")
             setProvider(e.payload);
         }),
       );
@@ -103,6 +103,15 @@ function HoverContent({
         srcLabel="Bailian"
         setupHint="Install the Bailian CLI (bl) to see usage."
         errorLead="Couldn't read Bailian CLI"
+      />
+    );
+  if (provider === "kimi")
+    return (
+      <VendorMeters
+        vendor={snapshot.vendor?.kimi}
+        srcLabel="Kimi"
+        setupHint="Sign in to Kimi Code (kimi login) to see quota."
+        errorLead="Couldn't read Kimi usage"
       />
     );
   return <ClaudeContent snapshot={snapshot} />;

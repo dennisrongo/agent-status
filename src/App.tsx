@@ -75,7 +75,7 @@ export default function App() {
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
@@ -137,15 +137,17 @@ export default function App() {
   const showGlm = snapshot?.detection?.glm ?? true;
   const showCopilot = snapshot?.detection?.copilot ?? false;
   const showAlibaba = snapshot?.detection?.alibaba ?? false;
+  const showKimi = snapshot?.detection?.kimi ?? false;
   const hidden = new Set(settings?.hiddenProviders ?? []);
-  const available: ("claude" | "glm" | "copilot" | "alibaba")[] = [
+  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
     ...(showAlibaba ? (["alibaba"] as const) : []),
+    ...(showKimi ? (["kimi"] as const) : []),
   ];
   const visible = available.filter((p) => !hidden.has(p));
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba")[] = visible.length
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi")[] = visible.length
     ? visible
     : available.length
       ? available
@@ -170,7 +172,7 @@ export default function App() {
         ) : (
           // First snapshot is still being assembled (local log scan + live
           // provider fetches). Show a branded boot screen — spinning logo arc,
-          // the four provider dots pulsing in sequence, and shimmering
+          // the provider dots pulsing in sequence, and shimmering
           // placeholders for the stats about to land — instead of a bare line
           // of text.
           <div className="boot">
@@ -193,6 +195,7 @@ export default function App() {
               <span className="boot-dot glm" />
               <span className="boot-dot copilot" />
               <span className="boot-dot alibaba" />
+              <span className="boot-dot kimi" />
             </div>
             <div className="boot-skel" aria-hidden="true">
               <div className="skel-kpis">
@@ -318,7 +321,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : p === "copilot" ? "Copilot" : "Alibaba"}
+                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : p === "copilot" ? "Copilot" : p === "alibaba" ? "Alibaba" : "Kimi"}
                   </button>
                 ))}
               </div>
@@ -422,6 +425,14 @@ export default function App() {
                 loginError={bailianLoginError}
               />
             )}
+
+            {eff === "kimi" && (
+              <KimiOverview
+                vendor={snapshot.vendor?.kimi}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+              />
+            )}
               </>
             )}
           </section>
@@ -521,6 +532,14 @@ export default function App() {
                   primary={vendorPrimary(snapshot.vendor?.alibaba)}
                 />
               )}
+              {showKimi && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.kimi)}
+                  name="Kimi Code"
+                  meta={vendorMeta(snapshot.vendor?.kimi, "sign in via the Kimi Code CLI")}
+                  primary={vendorPrimary(snapshot.vendor?.kimi)}
+                />
+              )}
             </div>
             <div className="note">
               <InfoIcon />
@@ -575,6 +594,7 @@ export default function App() {
             bailianSetOpenApiBusy={bailianSetOpenApiBusy}
             bailianSetOpenApiError={bailianSetOpenApiError}
             alibabaVendorStatus={snapshot?.vendor?.alibaba}
+            kimiVendorStatus={snapshot?.vendor?.kimi}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -855,6 +875,74 @@ function AlibabaOverview({
           <p className="connect-sub">
             Install the Bailian CLI (<code>npm i -g bailian-cli</code>) and run{" "}
             <code>bl auth login --console</code> to see token usage and quota.
+          </p>
+          <button className="btn primary" onClick={onConnect}>
+            Setup guide →
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function KimiOverview({
+  vendor,
+  minimal,
+  onConnect,
+}: {
+  vendor: VendorStatus | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+  // Quota windows (Session / Weekly) carry a pct + status → ring-gauge tiles.
+  const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  // Extra Usage wallet rows are plain text — no pct.
+  const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
+
+  return (
+    <>
+      {live && vendor ? (
+        <>
+          <QuotaMeters windows={windows} />
+          {!minimal && facts.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>Extra Usage</h2>
+                <span className="meta">pay-as-you-go balance</span>
+              </div>
+              <div className="budget">
+                {facts.map((d, i) => (
+                  <div className="budget-foot" key={`${d.label}-${i}`} style={i === 0 ? { marginTop: 0 } : undefined}>
+                    <span className="used">{d.label}</span>
+                    <span className="rem">{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      ) : vendor?.authExpired ? (
+        // A credential exists but is stale/rejected — the owning CLI holds the
+        // refresh flow, so point the user at it (mirrors Alibaba's expired card).
+        <div className="connect-card warn">
+          <p className="connect-title">Kimi Code login expired</p>
+          <p className="connect-sub">
+            Open Kimi Code — it refreshes the login automatically — or run{" "}
+            <code>kimi login</code>, then come back.
+          </p>
+          {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+        </div>
+      ) : (
+        <div className="connect-card">
+          <p className="connect-title">
+            {vendor?.configured
+              ? `Couldn’t reach Kimi Code${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Kimi Code usage data yet"}
+          </p>
+          <p className="connect-sub">
+            Reads the Kimi Code CLI&rsquo;s own login to show your real weekly
+            &amp; 5-hour quota. Sign in with <code>kimi login</code> to get started.
           </p>
           <button className="btn primary" onClick={onConnect}>
             Setup guide →
