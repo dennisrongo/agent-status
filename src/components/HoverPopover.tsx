@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { ResetText } from "./ResetText";
 import { tileLabel } from "../format";
 import { fitWindowHeight } from "../platform";
 import { isTauriReady } from "../tauriReady";
@@ -142,7 +143,7 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
               key={b.name}
               status={b.status}
               label={tileLabel(b.name)}
-              aux={`resets ${b.reset}`}
+              aux={<ResetText value={b.reset} />}
               pct={b.usedPct}
             />
           ))}
@@ -169,7 +170,7 @@ function MeterRow({
 }: {
   status: "ok" | "warn" | "danger";
   label: string;
-  aux: string;
+  aux: ReactNode;
   pct: number;
 }) {
   return (
@@ -223,7 +224,7 @@ function VendorMeters({
                 key={`${d.label}-${i}`}
                 status={d.status ?? "ok"}
                 label={d.label}
-                aux={d.value}
+                aux={<ResetText value={d.value} />}
                 pct={d.pct}
               />
             ) : (

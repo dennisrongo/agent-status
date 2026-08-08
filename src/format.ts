@@ -26,3 +26,27 @@ export function generatedLabel(generatedMs: number, fallback: string): string {
     d.getHours(),
   )}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Split a reset-countdown string into the "resets in" label and the time
+ * part that follows it, so the time can be colored separately. Recognizes a
+ * full "resets in 2h 15m" string (GLM/Alibaba), the bare "resets <date>"
+ * form, or a bare duration like "2h 15m" (Claude). Anything else — used/total
+ * counts ("1.2K / 10K"), placeholders ("—"), or state words ("ready") —
+ * returns no label so the caller renders it plain and uncolored.
+ */
+export function splitReset(value: string): { label: string; time: string } {
+  const v = value.trim();
+  const rest = v.startsWith("resets in ")
+    ? v.slice("resets in ".length)
+    : v.startsWith("resets ")
+      ? v.slice("resets ".length)
+      : null;
+  // A bare duration (e.g. "2h 15m", "3d 0h", "45m") from the Claude path.
+  if (rest === null) {
+    return /^\d+[dhm]/.test(v)
+      ? { label: "resets in", time: v }
+      : { label: "", time: v };
+  }
+  return { label: "resets in", time: rest };
+}

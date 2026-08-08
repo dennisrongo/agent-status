@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useState, type MouseEvent as ReactMouseEv
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { About } from "./components/About";
+import { ResetText } from "./components/ResetText";
 import { RingGauge } from "./components/RingGauge";
 import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -351,7 +352,7 @@ export default function App() {
                                 {b.usedFmt} / {b.limitFmt}
                               </span>
                             )}
-                            resets {b.reset}
+                            <ResetText value={b.reset} />
                           </div>
                         </div>
                       ))}
@@ -621,7 +622,9 @@ function QuotaMeters({ windows }: { windows: VendorKeyVal[] }) {
           <RingGauge pct={d.pct ?? 0} status={d.status ?? "ok"}>
             <div className="k-num">{Math.round(d.pct ?? 0)}%</div>
           </RingGauge>
-          <div className="k-sub">{d.value || "live"}</div>
+          <div className="k-sub">
+            {d.value ? <ResetText value={d.value} /> : "live"}
+          </div>
         </div>
       ))}
     </div>
