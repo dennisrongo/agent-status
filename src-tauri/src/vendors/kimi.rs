@@ -23,8 +23,14 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::process_util::SilentCommand;
 use super::{KeyVal, VendorStatus};
 
 const ENDPOINT: &str = "https://api.kimi.com/coding/v1/usages";
@@ -66,7 +72,7 @@ pub async fn fetch(now: DateTime<Utc>) -> VendorStatus {
         .map(|exp| now.timestamp() >= exp - EXPIRY_SKEW_SECS)
         .unwrap_or(false);
     if expired {
-        return login_expired("Kimi Code login expired — open Kimi Code or run `kimi login` to refresh it.");
+        return login_expired("Kimi Code login expired — sign in again from Settings (or run `kimi login`).");
     }
 
     let client = match reqwest::Client::builder()
@@ -91,9 +97,10 @@ pub async fn fetch(now: DateTime<Utc>) -> VendorStatus {
                 if status.as_u16() == 401 {
                     // The clock looked valid but the server rejected the token
                     // (revoked elsewhere) — same re-login state as a dead clock.
-                    return login_expired(format!(
-                        "Kimi Code login was rejected (HTTP 401) — open Kimi Code or run `kimi login`."
-                    ));
+                    return login_expired(
+                        "Kimi Code login was rejected (HTTP 401) — sign in again from Settings (or run `kimi login`)."
+                            .to_string(),
+                    );
                 }
                 return VendorStatus::failed(format!("HTTP {}", status.as_u16()));
             }
@@ -220,7 +227,7 @@ pub async fn refresh(now: DateTime<Utc>) -> Result<(), String> {
         .get("refresh_token")
         .and_then(|t| t.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or("No refresh token stored — open Kimi Code or run `kimi login` to sign in again.")?
+        .ok_or("No refresh token stored — sign in again from Settings (or run `kimi login`).")?
         .to_string();
 
     let client = reqwest::Client::builder()
@@ -247,7 +254,7 @@ pub async fn refresh(now: DateTime<Utc>) -> Result<(), String> {
         // login can fix it.
         if status.as_u16() == 400 || status.as_u16() == 401 {
             return Err(
-                "Kimi Code refresh token expired — open Kimi Code or run `kimi login` to sign in again."
+                "Kimi Code refresh token expired — sign in again from Settings (or run `kimi login`)."
                     .into(),
             );
         }
@@ -335,16 +342,274 @@ fn write_credentials_file(json: &str) -> Result<(), String> {
     std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// Whether the `kimi` CLI is somewhere on PATH (drives detection when no login
-/// exists yet — the user has the tool but hasn't signed in). Cheap, no spawn.
+/// Cached npm global prefix — the `npm config get prefix` subprocess is
+/// expensive, so we run it at most once per process lifetime (the directory
+/// itself doesn't change mid-session). Mirrors alibaba.rs.
+static NPM_PREFIX: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+fn npm_global_prefix() -> Option<PathBuf> {
+    NPM_PREFIX
+        .get_or_init(|| {
+            let out = npm_command()
+                .args(["config", "get", "prefix"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if prefix.is_empty() {
+                return None;
+            }
+            Some(PathBuf::from(prefix))
+        })
+        .clone()
+}
+
+/// Locate the `kimi` (Kimi Code CLI) binary. Checks PATH first, then the
+/// install script's well-known location (`$KIMI_CODE_HOME/bin`, default
+/// `~/.kimi-code/bin`), then the npm global prefix. Returns the path so
+/// callers can invoke it directly even when it isn't on PATH. Mirrors
+/// alibaba.rs's `find_cli`.
+pub fn find_cli() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    const NAMES: &[&str] = &["kimi.exe", "kimi.cmd"];
+    #[cfg(not(target_os = "windows"))]
+    const NAMES: &[&str] = &["kimi"];
+
+    // 1. PATH scan (covers most installs).
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            for name in NAMES {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // 2. The official install script drops the binary next to the config home
+    // ($KIMI_CODE_HOME/bin, default ~/.kimi-code/bin) — not on PATH until the
+    // user edits their shell profile, so check it explicitly.
+    if let Some(home) = credentials_dir() {
+        for name in NAMES {
+            let candidate = home.join("bin").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 3. npm global prefix (cached — the subprocess runs at most once).
+    if let Some(base) = npm_global_prefix() {
+        // npm puts binaries in <prefix>/ on Windows, <prefix>/bin/ on Unix.
+        for name in NAMES {
+            let candidate = base.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let bin = base.join("bin");
+            if bin.join("kimi").is_file() {
+                return Some(bin.join("kimi"));
+            }
+        }
+    }
+
+    None
+}
+
+/// Whether the `kimi` CLI is reachable (drives detection when no login exists
+/// yet — the user has the tool but hasn't signed in). Cheap, no spawn.
 pub fn cli_on_path() -> bool {
-    let Some(paths) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&paths).any(|dir| {
-        let exe = dir.join("kimi");
-        exe.is_file()
-            || exe.with_extension("exe").is_file()
-            || exe.with_extension("cmd").is_file()
-    })
+    find_cli().is_some()
+}
+
+/// Build a Command for npm, handling Windows .cmd wrappers. Mirrors alibaba.rs.
+fn npm_command() -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/C").arg("npm").silent();
+        return cmd;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("npm");
+        cmd.silent();
+        cmd
+    }
+}
+
+/// Build a Command for the Kimi Code CLI, handling Windows .cmd wrappers
+/// (CreateProcess can't run a .cmd shim directly — route through cmd.exe /C).
+/// `.silent()` suppresses the console window on every invocation. Mirrors
+/// alibaba.rs's `bl_command`.
+fn kimi_command(cli: &std::path::Path) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let ext = cli.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.arg("/C").arg(cli).silent();
+            return cmd;
+        }
+    }
+    let mut cmd = std::process::Command::new(cli);
+    cmd.silent();
+    cmd
+}
+
+/// What the Settings UI shows about the Kimi Code CLI: installed? logged in?
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliStatus {
+    pub installed: bool,
+    pub authenticated: bool,
+}
+
+/// Local, network-free status for the Settings UI: the CLI binary location
+/// plus the stored-login check (`token_status` — the credentials file the CLI
+/// writes). Unlike Bailian there's no `kimi auth status` subcommand, and the
+/// file read is cheap enough to not need a subprocess at all.
+pub fn cli_status() -> CliStatus {
+    CliStatus {
+        installed: find_cli().is_some(),
+        authenticated: token_status(Utc::now()).present,
+    }
+}
+
+/// The device-flow details `kimi login` prints to stderr once it starts
+/// polling — surfaced in the Settings UI so the user can complete the login
+/// even if the browser didn't open (or they want to approve on another device).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLogin {
+    pub verification_url: String,
+    pub user_code: String,
+}
+
+/// Run `kimi login` — the CLI's RFC 8628 device-code flow. The CLI opens the
+/// user's browser itself and blocks until the browser-side authorization
+/// completes (or fails / expires). `on_code` fires as soon as the verification
+/// URL + user code appear on stderr, so the UI can show them while the flow is
+/// still in flight. When a login already exists the CLI exits 0 immediately
+/// ("Logged in to managed:kimi-code."), which this reports as success.
+pub fn login(on_code: impl FnOnce(DeviceLogin)) -> Result<String, String> {
+    let Some(cli) = find_cli() else {
+        return Err("Kimi Code CLI not found — install it first.".to_string());
+    };
+
+    let mut child = kimi_command(&cli)
+        .arg("login")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn: {e}"))?;
+
+    // The CLI prints the device URL + code to stderr, then polls. Read the
+    // lines as they arrive so `on_code` fires while the flow is still waiting
+    // on the user, not only after the process exits.
+    let mut captured = String::new();
+    let mut announced = false;
+    let mut on_code = Some(on_code);
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            captured.push_str(&line);
+            captured.push('\n');
+            if !announced {
+                if let Some(device) = parse_device_login(&captured) {
+                    announced = true;
+                    if let Some(cb) = on_code.take() {
+                        cb(device);
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("wait: {e}"))?;
+    if status.success() {
+        Ok("Authenticated with Kimi Code. Usage will appear on the next refresh.".to_string())
+    } else {
+        // Surface the CLI's own reason (last non-empty stderr line) — e.g. a
+        // cancelled or expired device flow.
+        let detail = captured
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| format!("exit code {}", status.code().unwrap_or(-1)));
+        Err(format!("Login failed: {detail}"))
+    }
+}
+
+/// Pure parser for the device-flow lines `kimi login` prints to stderr:
+///
+/// ```text
+/// Opening browser for Kimi device login: https://www.kimi.com/code/authorize_device?user_code=RY38-8MEX
+/// If the browser did not open, paste the URL above and enter code: RY38-8MEX
+/// ```
+///
+/// The URL is the primary source (it carries `user_code=`); the "enter code:"
+/// line is the fallback for builds whose URL doesn't embed it. Split from the
+/// subprocess so the extraction is unit-testable.
+fn parse_device_login(text: &str) -> Option<DeviceLogin> {
+    let url = text
+        .split_whitespace()
+        .find(|w| w.starts_with("https://") && w.contains("authorize_device"))?
+        .to_string();
+    let code = url
+        .split("user_code=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_string())
+        .or_else(|| {
+            text.lines().find_map(|l| {
+                l.split("enter code:")
+                    .nth(1)
+                    .map(|c| c.trim().trim_end_matches('.').to_string())
+                    .filter(|c| !c.is_empty())
+            })
+        })?;
+    Some(DeviceLogin { verification_url: url, user_code: code })
+}
+
+/// Sign out of Kimi Code. There is no `kimi logout` subcommand (as of CLI
+/// 0.34), so this writes the CLI's own "revoked tombstone" — empty access and
+/// refresh tokens — to the credentials file, the same shape the CLI writes
+/// when it revokes a login locally. `token_status` already reads that shape as
+/// signed-out, and the next TUI launch simply asks to log in again.
+pub fn logout() -> Result<String, String> {
+    let path = credentials_path().ok_or("no home directory for Kimi Code credentials")?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|_| "No Kimi Code login found — already signed out.".to_string())?;
+    let tombstone = build_logout_tombstone(&raw)?;
+    std::fs::write(&path, tombstone).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok("Disconnected from Kimi Code — the CLI is signed out too.".to_string())
+}
+
+/// Pure builder for the logout tombstone: blanks the tokens and zeroes the
+/// expiry while preserving every other field (scope, token_type, …) so the
+/// on-disk shape stays exactly what the CLI expects. Mirrors the tombstone the
+/// CLI itself writes on revoke (see `token_status_revoked_tombstone_is_not_present`).
+fn build_logout_tombstone(existing: &str) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(existing.trim())
+        .map_err(|e| format!("stored credentials unreadable: {e}"))?;
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let obj = root.as_object_mut().expect("root coerced to object");
+    obj.insert("access_token".into(), Value::String(String::new()));
+    obj.insert("refresh_token".into(), Value::String(String::new()));
+    obj.insert("expires_at".into(), Value::Number(0.into()));
+    obj.insert("expires_in".into(), Value::Number(0.into()));
+    serde_json::to_string(&root).map_err(|e| format!("serialize: {e}"))
 }
 
 /// Pure parser for the `/usages` response. `now` lets reset timestamps be
@@ -928,6 +1193,67 @@ mod tests {
             token_endpoint_for("https://auth.kimi.com/"),
             "https://auth.kimi.com/api/oauth/token"
         );
+    }
+
+    // ── device-login parse (kimi login stderr) ──
+
+    /// The real stderr capture from `kimi login` (CLI 0.34).
+    fn device_login_stderr() -> &'static str {
+        "\nOpening browser for Kimi device login: https://www.kimi.com/code/authorize_device?user_code=RY38-8MEX\n\
+         If the browser did not open, paste the URL above and enter code: RY38-8MEX\n\
+         Code expires in 1800s.\n\
+         Waiting for authorization to complete...\n"
+    }
+
+    #[test]
+    fn device_login_parses_url_and_code() {
+        let d = parse_device_login(device_login_stderr()).unwrap();
+        assert_eq!(
+            d.verification_url,
+            "https://www.kimi.com/code/authorize_device?user_code=RY38-8MEX"
+        );
+        assert_eq!(d.user_code, "RY38-8MEX");
+    }
+
+    #[test]
+    fn device_login_falls_back_to_enter_code_line() {
+        // A build whose URL doesn't embed the code still parses via the
+        // "enter code:" fallback line.
+        let text = "Opening browser for Kimi device login: https://www.kimi.com/code/authorize_device\n\
+                    If the browser did not open, paste the URL above and enter code: ABCD-1234\n";
+        let d = parse_device_login(text).unwrap();
+        assert_eq!(d.user_code, "ABCD-1234");
+    }
+
+    #[test]
+    fn device_login_partial_output_is_none() {
+        // Before the URL line arrives (or on the already-logged-in path) there
+        // is nothing to announce yet.
+        assert!(parse_device_login("").is_none());
+        assert!(parse_device_login("Logged in to managed:kimi-code.\n").is_none());
+    }
+
+    // ── logout tombstone ──
+
+    #[test]
+    fn logout_tombstone_blanks_tokens_and_preserves_fields() {
+        let existing = r#"{"access_token":"a","refresh_token":"r","expires_at":1786254208,"scope":"kimi-code","token_type":"Bearer","expires_in":900}"#;
+        let out = build_logout_tombstone(existing).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["access_token"], "");
+        assert_eq!(v["refresh_token"], "");
+        assert_eq!(v["expires_at"], 0);
+        assert_eq!(v["expires_in"], 0);
+        assert_eq!(v["scope"], "kimi-code");
+        assert_eq!(v["token_type"], "Bearer");
+        // The tombstone reads back as signed-out.
+        let s = parse_token_status(&out, now());
+        assert!(!s.present && !s.has_refresh && !s.expired);
+    }
+
+    #[test]
+    fn logout_tombstone_rejects_garbage() {
+        assert!(build_logout_tombstone("not json").is_err());
     }
 }
 

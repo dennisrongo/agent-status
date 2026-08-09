@@ -1256,6 +1256,65 @@ fn clear_alibaba_throttle(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Query the Kimi Code CLI's install + auth status for the Settings UI. Local
+/// and cheap (PATH scan + credentials-file read — no subprocess), but run on
+/// the blocking pool anyway to match the other CLI status commands.
+#[tauri::command]
+pub async fn kimi_cli_status() -> Result<kimi::CliStatus, String> {
+    Ok(tokio::task::spawn_blocking(kimi::cli_status)
+        .await
+        .map_err(|e| e.to_string())?)
+}
+
+/// Run `kimi login` — the CLI's device-code flow. The CLI opens the browser
+/// itself and blocks until the user approves; the device URL + user code are
+/// forwarded to the UI via the `kimi-login-device` event as soon as the CLI
+/// prints them, so the user can complete the flow even if the browser didn't
+/// open. Blocking — the UI shows a spinner for the duration. On success the
+/// refresh throttle is cleared and a background collect is kicked off so the
+/// Kimi card flips to connected without waiting for the next tick.
+#[tauri::command]
+pub async fn kimi_cli_login(app: AppHandle) -> Result<String, String> {
+    let emitter = app.clone();
+    let msg = tokio::task::spawn_blocking(move || {
+        kimi::login(move |device| {
+            let _ = emitter.emit("kimi-login-device", &device);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_kimi_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+/// Sign out of Kimi Code — writes the CLI's revoked-tombstone credential shape
+/// (there is no `kimi logout` subcommand). Blocking file I/O, spawn_blocking
+/// for consistency with the other login/logout commands.
+#[tauri::command]
+pub async fn kimi_cli_logout(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(kimi::logout)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_kimi_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+/// Clear the Kimi auto-refresh throttle so the collect after a login/logout
+/// re-reads the credentials immediately instead of waiting out
+/// `KIMI_REFRESH_MIN_SECS` (mirrors `clear_alibaba_throttle`).
+fn clear_kimi_throttle(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.kimi_refresh_attempted_at = None;
+    Ok(())
+}
+
 /// Run `collect()` in a background task and broadcast the result via
 /// `usage-updated`.  Login / connect commands call this instead of awaiting
 /// `collect()` inline so they can return immediately — the UI flips to

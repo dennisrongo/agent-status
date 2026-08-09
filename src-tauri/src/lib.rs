@@ -138,6 +138,9 @@ pub fn run() {
             commands::bailian_cli_login,
             commands::bailian_cli_logout,
             commands::bailian_set_open_api,
+            commands::kimi_cli_status,
+            commands::kimi_cli_login,
+            commands::kimi_cli_logout,
             commands::open_url,
             commands::restart_after_update,
         ])

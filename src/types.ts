@@ -163,6 +163,19 @@ export interface BailianCliStatus {
   hasOpenApi: boolean;
 }
 
+export interface KimiCliStatus {
+  installed: boolean;
+  authenticated: boolean;
+}
+
+/** Device-flow details pushed via the `kimi-login-device` event while a
+ * `kimi login` is in flight — the Settings UI shows the code so the user can
+ * complete the login even if the browser didn't open. */
+export interface KimiDeviceLogin {
+  verificationUrl: string;
+  userCode: string;
+}
+
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
 export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi";

@@ -70,6 +70,13 @@ export default function App() {
     setBailianOpenApi,
     bailianSetOpenApiBusy,
     bailianSetOpenApiError,
+    kimiStatus,
+    loginKimi,
+    kimiLoginBusy,
+    kimiLoginError,
+    logoutKimi,
+    kimiLogoutBusy,
+    kimiLogoutError,
     isLoading,
     error,
     keyError,
@@ -431,6 +438,9 @@ export default function App() {
                 vendor={snapshot.vendor?.kimi}
                 minimal={minimal}
                 onConnect={() => setTab("settings")}
+                onLogin={() => void loginKimi()}
+                loginBusy={kimiLoginBusy}
+                loginError={kimiLoginError}
               />
             )}
               </>
@@ -594,6 +604,13 @@ export default function App() {
             bailianSetOpenApiBusy={bailianSetOpenApiBusy}
             bailianSetOpenApiError={bailianSetOpenApiError}
             alibabaVendorStatus={snapshot?.vendor?.alibaba}
+            kimiStatus={kimiStatus}
+            loginKimi={loginKimi}
+            kimiLoginBusy={kimiLoginBusy}
+            kimiLoginError={kimiLoginError}
+            logoutKimi={logoutKimi}
+            kimiLogoutBusy={kimiLogoutBusy}
+            kimiLogoutError={kimiLogoutError}
             kimiVendorStatus={snapshot?.vendor?.kimi}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
@@ -889,10 +906,16 @@ function KimiOverview({
   vendor,
   minimal,
   onConnect,
+  onLogin,
+  loginBusy,
+  loginError,
 }: {
   vendor: VendorStatus | undefined;
   minimal: boolean;
   onConnect: () => void;
+  onLogin: () => void;
+  loginBusy: boolean;
+  loginError: string | null;
 }) {
   const live = Boolean(vendor?.configured && vendor.ok);
   // Quota windows (Session / Weekly) carry a pct + status → ring-gauge tiles.
@@ -923,15 +946,20 @@ function KimiOverview({
           )}
         </>
       ) : vendor?.authExpired ? (
-        // A credential exists but is stale/rejected — the owning CLI holds the
-        // refresh flow, so point the user at it (mirrors Alibaba's expired card).
+        // A credential exists but is stale/rejected — offer the in-app device
+        // login (mirrors Alibaba's expired card) instead of sending the user
+        // off to a terminal.
         <div className="connect-card warn">
           <p className="connect-title">Kimi Code login expired</p>
           <p className="connect-sub">
-            Open Kimi Code — it refreshes the login automatically — or run{" "}
-            <code>kimi login</code>, then come back.
+            Sign in again to restore your usage and quota — a browser window
+            opens to approve the login.
           </p>
           {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+          <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+            {loginBusy ? "Signing in…" : "Sign in to Kimi Code"}
+          </button>
+          {loginError && <p className="key-err">{loginError}</p>}
         </div>
       ) : (
         <div className="connect-card">
@@ -942,7 +970,7 @@ function KimiOverview({
           </p>
           <p className="connect-sub">
             Reads the Kimi Code CLI&rsquo;s own login to show your real weekly
-            &amp; 5-hour quota. Sign in with <code>kimi login</code> to get started.
+            &amp; 5-hour quota. Sign in from Settings to get started.
           </p>
           <button className="btn primary" onClick={onConnect}>
             Setup guide →

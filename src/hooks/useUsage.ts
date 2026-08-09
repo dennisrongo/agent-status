@@ -6,6 +6,7 @@ import type {
   BailianCliStatus,
   ClaudeLoginInfo,
   CopilotDeviceCode,
+  KimiCliStatus,
   PlanKey,
   SettingsView,
   TooltipProvider,
@@ -49,6 +50,9 @@ export function useUsage() {
   const bailianLoginCmd = useTauriCommand<string>("bailian_cli_login");
   const bailianLogoutCmd = useTauriCommand<string>("bailian_cli_logout");
   const bailianSetOpenApiCmd = useTauriCommand<string>("bailian_set_open_api");
+  const kimiStatusCmd = useTauriCommand<KimiCliStatus>("kimi_cli_status");
+  const kimiLoginCmd = useTauriCommand<string>("kimi_cli_login");
+  const kimiLogoutCmd = useTauriCommand<string>("kimi_cli_logout");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -122,6 +126,21 @@ export function useUsage() {
     (accessKeyId: string, accessKeySecret: string) =>
       bailianSetOpenApiCmd.execute({ accessKeyId, accessKeySecret }),
     [bailianSetOpenApiCmd],
+  );
+
+  const kimiStatus = useCallback(
+    () => kimiStatusCmd.execute(),
+    [kimiStatusCmd],
+  );
+
+  const loginKimi = useCallback(
+    () => kimiLoginCmd.execute(),
+    [kimiLoginCmd],
+  );
+
+  const logoutKimi = useCallback(
+    () => kimiLogoutCmd.execute(),
+    [kimiLogoutCmd],
   );
 
   const setPlan = useCallback(
@@ -333,6 +352,13 @@ export function useUsage() {
     setBailianOpenApi,
     bailianSetOpenApiBusy: bailianSetOpenApiCmd.isLoading,
     bailianSetOpenApiError: bailianSetOpenApiCmd.error,
+    kimiStatus,
+    loginKimi,
+    kimiLoginBusy: kimiLoginCmd.isLoading,
+    kimiLoginError: kimiLoginCmd.error,
+    logoutKimi,
+    kimiLogoutBusy: kimiLogoutCmd.isLoading,
+    kimiLogoutError: kimiLogoutCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,

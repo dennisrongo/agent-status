@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
 /** Clickable info icon that opens a popover with help text. Stays open until
  * the user clicks outside — so they can follow multi-step instructions. */
@@ -78,6 +79,13 @@ interface Props {
   setBailianOpenApi: (accessKeyId: string, accessKeySecret: string) => Promise<string | null>;
   bailianSetOpenApiBusy: boolean;
   bailianSetOpenApiError: string | null;
+  kimiStatus: () => Promise<KimiCliStatus | null>;
+  loginKimi: () => Promise<string | null>;
+  kimiLoginBusy: boolean;
+  kimiLoginError: string | null;
+  logoutKimi: () => Promise<string | null>;
+  kimiLogoutBusy: boolean;
+  kimiLogoutError: string | null;
   /** Authoritative Alibaba status from the usage fetch — reflects the real
    * connection state (incl. a console session that `bl auth status` can't see
    * as expired). Falls back to `bailianStatus()` before the first snapshot. */
@@ -158,6 +166,13 @@ export function Settings({
   setBailianOpenApi,
   bailianSetOpenApiBusy,
   bailianSetOpenApiError,
+  kimiStatus,
+  loginKimi,
+  kimiLoginBusy,
+  kimiLoginError,
+  logoutKimi,
+  kimiLogoutBusy,
+  kimiLogoutError,
   alibabaVendorStatus,
   kimiVendorStatus,
   keyError,
@@ -446,42 +461,16 @@ export function Settings({
         <h2>Kimi Code</h2>
         <span className="meta">via Kimi Code CLI</span>
       </div>
-      <div className="key-row">
-        <div className="key-top">
-          <span className="key-label">Kimi Code login<InfoTip>
-            <p style={{ margin: "0 0 8px" }}>Reads the OAuth login the <strong>Kimi Code CLI</strong> stores on this machine to show your real weekly &amp; 5-hour quota — nothing to configure here.</p>
-            <div className="info-steps">
-              <div className="info-step">
-                <span className="info-step-num">1</span>
-                <span className="info-step-body">Install Kimi Code and sign in with <code>kimi login</code>.</span>
-              </div>
-              <div className="info-step">
-                <span className="info-step-num">2</span>
-                <span className="info-step-body">This app picks up the login automatically on the next refresh.</span>
-              </div>
-            </div>
-            <p style={{ margin: "8px 0 0", fontSize: "10.5px", color: "var(--faint)" }}>
-              An expired login is renewed in place automatically — if that fails, open Kimi Code or run <code>kimi login</code> again.
-            </p>
-          </InfoTip></span>
-          <span className={`key-status ${kimiVendorStatus?.configured && !kimiVendorStatus.authExpired ? "set" : ""}`}>
-            {kimiVendorStatus?.configured
-              ? kimiVendorStatus.authExpired
-                ? "⚠ login expired"
-                : "● connected"
-              : "○ not detected"}
-          </span>
-        </div>
-        <span className="connect-sub" style={{ margin: "0" }}>
-          {kimiVendorStatus?.configured
-            ? kimiVendorStatus.authExpired
-              ? "Open Kimi Code or run kimi login to refresh the expired login."
-              : kimiVendorStatus.ok
-                ? kimiVendorStatus.secondary
-                : (kimiVendorStatus.error ?? "reading usage…")
-            : "Sign in to the Kimi Code CLI (kimi login) — the login is picked up automatically."}
-        </span>
-      </div>
+      <KimiCli
+        status={kimiStatus}
+        login={loginKimi}
+        loginBusy={kimiLoginBusy}
+        loginError={kimiLoginError}
+        logout={logoutKimi}
+        logoutBusy={kimiLogoutBusy}
+        logoutError={kimiLogoutError}
+        vendorStatus={kimiVendorStatus}
+      />
 
       {keyError && <p className="key-err">{keyError}</p>}
 
@@ -1099,6 +1088,217 @@ function BailianCli({
         )}
         {logoutError && <p className="key-err">{logoutError}</p>}
       </div>
+    </div>
+  );
+}
+
+function KimiCli({
+  status,
+  login,
+  loginBusy,
+  loginError,
+  logout,
+  logoutBusy,
+  logoutError,
+  vendorStatus,
+}: {
+  status: () => Promise<KimiCliStatus | null>;
+  login: () => Promise<string | null>;
+  loginBusy: boolean;
+  loginError: string | null;
+  logout: () => Promise<string | null>;
+  logoutBusy: boolean;
+  logoutError: string | null;
+  vendorStatus?: VendorStatus;
+}) {
+  const [cli, setCli] = useState<KimiCliStatus | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  // Device URL + code pushed by the backend while `kimi login` polls — shown
+  // so the user can finish the flow even if the browser didn't open.
+  const [device, setDevice] = useState<KimiDeviceLogin | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(() => {
+    (async () => {
+      const s = await statusRef.current();
+      setCli(s);
+      setChecking(false);
+    })();
+  }, []);
+
+  // The backend emits `kimi-login-device` as soon as the CLI prints the
+  // device URL + code. Only listen while a login is in flight, and clear the
+  // code once it settles (success replaces this view; failure shows the error).
+  useEffect(() => {
+    if (!loginBusy) {
+      setDevice(null);
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    listen<KimiDeviceLogin>("kimi-login-device", (e) => setDevice(e.payload)).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [loginBusy]);
+
+  const doLogin = async () => {
+    setMsg(null);
+    const result = await login();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doLogout = async () => {
+    setMsg(null);
+    const result = await logout();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub">Checking for Kimi Code CLI…</span>
+      </div>
+    );
+  }
+
+  // The snapshot (from a usage fetch) is the authority for connected/expired —
+  // it reflects the real login state including a revoked or expired token.
+  // Fall back to the local credentials check only before the first collect.
+  const expired = vendorStatus?.authExpired ?? false;
+  const connected = vendorStatus
+    ? vendorStatus.configured && !expired
+    : (cli?.authenticated ?? false);
+
+  // Not installed → point at the installer (a shell script — not something the
+  // app runs for you, unlike the npm-installed Bailian CLI).
+  if (!cli?.installed) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Kimi Code CLI (<code>kimi</code>)<InfoTip>Reads your Kimi Code weekly &amp; 5-hour quota via the login the CLI stores on this machine.</InfoTip></span>
+          <span className="key-status">○ not installed</span>
+        </div>
+        <span className="connect-sub" style={{ margin: "0" }}>
+          Install the Kimi Code CLI, then sign in here — see the{" "}
+          <a
+            className="about-link"
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              void invoke("open_url", { url: "https://www.kimi.com/code/docs/en/kimi-code-cli/" });
+            }}
+          >
+            setup guide
+          </a>
+          .
+        </span>
+      </div>
+    );
+  }
+
+  // Installed but not usable: no login at all, or a stale one. Both need the
+  // same fix — `kimi login` — so they share the sign-in affordance.
+  if (!connected) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Kimi Code CLI (<code>kimi</code>)<InfoTip>{expired
+            ? "Your Kimi Code login has expired. Sign in again — a browser window opens to approve the device login. Shares the kimi CLI login."
+            : "Sign in to connect your Kimi Code account — a browser window opens to approve the device login. Shares the kimi CLI login, so this signs it in too."}</InfoTip></span>
+          <span className="key-status">{expired ? "○ login expired" : "○ not signed in"}</span>
+        </div>
+        <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
+          {loginBusy ? "Signing in…" : expired ? "Reconnect Kimi Code" : "Sign in to Kimi Code"}
+        </button>
+        {loginBusy && (
+          device ? (
+            <>
+              <span className="connect-sub" style={{ margin: "8px 0 0" }}>
+                Approve the login in your browser, then come back — this updates automatically.{" "}
+                <a
+                  className="about-link"
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void invoke("open_url", { url: device.verificationUrl });
+                  }}
+                >
+                  Re-open page
+                </a>
+              </span>
+              <div className="key-top" style={{ marginTop: 6 }}>
+                <span className="key-label" style={{ fontFamily: "var(--mono)", fontSize: 16, letterSpacing: "0.1em" }}>
+                  {device.userCode}
+                </span>
+              </div>
+            </>
+          ) : (
+            <span className="connect-sub" style={{ margin: "8px 0 0" }}>
+              Starting the device login — a browser window will open…
+            </span>
+          )
+        )}
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+        {loginError && <p className="key-err">{loginError}</p>}
+      </div>
+    );
+  }
+
+  // Installed + authenticated → show connected status.
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Kimi Code CLI (<code>kimi</code>)<InfoTip>
+          <p style={{ margin: "0 0 8px" }}>Reads the OAuth login the <strong>Kimi Code CLI</strong> stores on this machine to show your real weekly &amp; 5-hour quota.</p>
+          <p style={{ margin: "0", fontSize: "10.5px", color: "var(--faint)" }}>
+            An expired token is renewed in place automatically. Disconnecting signs the <code>kimi</code> CLI out too — it shares this login.
+          </p>
+        </InfoTip></span>
+        <span className="key-status set">● connected</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+        {vendorStatus?.ok
+          ? vendorStatus.secondary
+          : (vendorStatus?.error ?? "Authenticated via Kimi Code CLI.")}
+      </span>
+      <div style={{ marginTop: 8 }}>
+        {confirmLogout ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn"
+              disabled={logoutBusy}
+              onClick={async () => {
+                await doLogout();
+                setConfirmLogout(false);
+              }}
+            >
+              {logoutBusy ? "Disconnecting…" : "Confirm disconnect"}
+            </button>
+            <button className="btn" disabled={logoutBusy} onClick={() => setConfirmLogout(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="btn" onClick={() => setConfirmLogout(true)}>
+            Disconnect
+          </button>
+        )}
+        {logoutError && <p className="key-err">{logoutError}</p>}
+      </div>
+      {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
     </div>
   );
 }
