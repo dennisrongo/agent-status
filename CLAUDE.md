@@ -71,7 +71,7 @@ src/ (React)                         src-tauri/src/ (Rust)
 
 `commands::usage::collect()` (in [src-tauri/src/commands/usage.rs](src-tauri/src/commands/usage.rs)) is the heart of the app. Every refresh path funnels through it:
 
-1. Scan local logs off the async runtime via `spawn_blocking` (`scanner::scan_default`) → a base `UsageSnapshot` with **estimated** Claude meters.
+1. Scan local logs off the async runtime via `spawn_blocking` (`scanner::scan_default`) → a base `UsageSnapshot` with **estimated** Claude meters and the cross-provider Sessions list.
 2. Optionally overwrite the Claude meters with **live** `/usage` data (`vendors::claude::fetch`).
 3. Fetch live GLM / Anthropic / Copilot / Kimi vendor status (network, async).
 4. Compute `Detection` (which provider tabs to show) and attach the `VendorReport`.
@@ -85,6 +85,18 @@ src/ (React)                         src-tauri/src/ (Rust)
 - **Live `/usage` throttle**: the live Claude endpoint rate-limits hard, so it's fetched at most once per `LIVE_CLAUDE_MIN_SECS` (120s) regardless of the faster log-scan refresh interval. Between fetches, `collect()` serves `live_claude_buckets` (the last *good* live reading). Never fall back to the local estimate mid-stream — the two are on different scales and the meters would visibly flip-flop. The live-data state machine has distinct UI states (`live` / `pending` / `needs_reauth` / `signed_out`) — read the big `if live_claude { … }` block before touching it.
 - **Out-of-order snapshots**: `Meta.generatedMs` stamps every snapshot; the frontend (`useUsage`'s `applySnapshot`) drops any snapshot older than what's displayed. Multiple emitters race, so this guard is load-bearing.
 - The background loop **only polls while the window is visible** — no network calls when the dropdown is hidden.
+
+### Sessions come from several log formats, and they disagree
+
+`scanner::scan_roots` takes a `ScanRoots` (one path per provider) and merges session rows from every CLI that keeps a local log — see the table in the `scanner` module doc. The formats are not equivalent, and the differences are load-bearing:
+
+- **Claude** and **Kimi** record per-turn token usage, so their rows are exact. Kimi splits usage across `agents/*/wire.jsonl` (main loop + one file per subagent), each turn recorded exactly once, so summing across agents is correct and summing anything else double-counts.
+- **Copilot** writes totals only in `session.shutdown`. A running session has none — that's `—`, not zero. Resumed sessions emit several shutdowns: current builds restore cumulative counters (don't sum them), older ones reset to zero (don't take the last), so `scan_copilot` takes the **max**.
+- **GLM** and **Alibaba** have no per-session local data at all and never will from a log scan; don't add speculative parsing for them.
+
+Token/cost figures are rendered to strings **in Rust** (`tokensText` / `costText`) because "unavailable" is provider-specific — dollars for Claude, premium requests for Copilot, `—` for a flat-rate plan. The UI must not re-derive them from the numeric fields, which are zero when unknown.
+
+Both new scanners are on the refresh path, so they read only the newest `MAX_PROVIDER_ROWS` sessions per provider and prefilter lines by substring before parsing JSON. Copilot event logs run to megabytes; keep the cheap path cheap.
 
 ### Estimated vs. live data
 

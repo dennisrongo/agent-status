@@ -123,6 +123,9 @@ Each provider reports different things. Local data comes from parsing logs on di
 | Metric | Source | Real? |
 | --- | --- | --- |
 | Premium-request quota | GitHub `copilot_internal/user` (your editor / `gh` token) | ✅ real (per-user) |
+| Session rows (project / model / tokens) | `~/.copilot/session-state/*/events.jsonl` | ✅ exact, but only once a session ends |
+
+> Copilot writes a session's totals when the session shuts down, so a session you're still in shows `—` until you close it. Its second figure is **premium requests**, not dollars.
 
 ### Alibaba Bailian
 
@@ -138,10 +141,17 @@ Each provider reports different things. Local data comes from parsing logs on di
 | --- | --- | --- |
 | Weekly / 5h quota | Kimi `coding/v1/usages` (the Kimi Code CLI's own OAuth login) | ✅ real (per-user) |
 | Extra Usage balance | same endpoint (`boosterWallet`) | ✅ real |
+| Session rows (project / model / tokens) | `~/.kimi-code/sessions/**/wire.jsonl` | ✅ exact, per turn |
+
+> Kimi tokens are summed across the main loop **and** every subagent of a session. There's no cost column — the coding plan is flat-rate, so a dollar figure would be invented.
 
 > Kimi access tokens live only ~15 minutes, so an expired login is **renewed in place automatically** using the CLI's stored refresh token (written back to the shared credentials file). Only a dead refresh token asks you to open Kimi Code or run `kimi login` again.
 
-> GLM, Copilot, and Alibaba expose no per-token local cost — only their live quota meters.
+### Sessions ("Recent activity")
+
+Rows come from every CLI that keeps a local session log — Claude, Kimi, and Copilot — interleaved by recency, plus a single summary row for GLM. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own. GLM is the same story — its local logs record only MCP server lifecycle, and a GLM-backed Claude Code session lands in Claude's logs.
+
+Anything a provider doesn't record locally shows `—` rather than a zero.
 
 ---
 

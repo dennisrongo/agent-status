@@ -69,6 +69,10 @@ export interface SessionRow {
   cost: number;
   when: string;
   provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi";
+  /** Pre-rendered by Rust — "1.2M", or "—" when the provider records no count. */
+  tokensText: string;
+  /** Pre-rendered by Rust — dollars, premium requests, or "—". */
+  costText: string;
 }
 
 export interface Provider {

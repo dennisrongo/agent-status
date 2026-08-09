@@ -1,6 +1,15 @@
-//! Local CLI usage scanner. Reads Claude Code session logs
-//! (`~/.claude/projects/**/*.jsonl`) and GLM/z.ai logs (`~/.zai/*.log`),
-//! aggregates token usage into the snapshot the frontend renders.
+//! Local CLI usage scanner. Reads every agent CLI's on-disk session log and
+//! aggregates them into the snapshot the frontend renders:
+//!
+//! | Provider | Source | Per-session tokens |
+//! |---|---|---|
+//! | Claude Code | `~/.claude/projects/**/*.jsonl` | exact, per message |
+//! | Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | exact, per turn |
+//! | Copilot CLI | `~/.copilot/session-state/*/events.jsonl` | totals at shutdown only |
+//! | GLM / z.ai | `~/.zai/*.log` | none — server lifecycle only |
+//!
+//! Alibaba has no local coding-session log at all (the `bl` CLI is a one-shot
+//! API client), so it contributes vendor-side quota but no rows.
 //!
 //! All file I/O here is synchronous; callers must run it via
 //! `tokio::task::spawn_blocking` from async commands.
@@ -132,6 +141,14 @@ pub struct SessionRow {
     pub cost: f64,
     pub when: String,
     pub provider: String,
+    /// Pre-rendered token figure. Providers differ in what they record, so the
+    /// display string is built here rather than in the UI: `"1.2M"` when the
+    /// count is real, `"—"` when the provider doesn't expose one.
+    pub tokens_text: String,
+    /// Pre-rendered secondary figure. Dollars for Claude (estimated from
+    /// standard-tier pricing), premium requests for Copilot, `"—"` where the
+    /// provider bills on a flat-rate plan and a dollar figure would be a lie.
+    pub cost_text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +189,28 @@ struct SessionAgg {
     project: String,
     last: DateTime<Utc>,
     family: &'static str,
+}
+
+/// Placeholder for a figure a provider doesn't record locally.
+const EM_DASH: &str = "—";
+
+/// Most-recent session rows kept per provider. The Sessions list is scrollable,
+/// not paginated, so an unbounded history would render an unbounded DOM.
+const MAX_PROVIDER_ROWS: usize = 25;
+
+/// Roll-up of one provider's session rows for the Providers tab.
+struct ProviderTotals {
+    sessions: usize,
+    tokens: u64,
+}
+
+impl ProviderTotals {
+    fn of(rows: &[(DateTime<Utc>, SessionRow)]) -> Self {
+        Self {
+            sessions: rows.len(),
+            tokens: rows.iter().map(|(_, r)| r.tokens).sum(),
+        }
+    }
 }
 
 // ---------- Pricing (USD per 1M tokens, standard tier) ----------
@@ -304,21 +343,65 @@ fn status_for(pct: f64) -> (&'static str, &'static str) {
 
 // ---------- Public entry ----------
 
+/// Every local log root the scanner reads. Grouped into one struct so adding a
+/// provider doesn't ripple through every call site.
+#[derive(Debug, Clone, Default)]
+pub struct ScanRoots {
+    /// `~/.claude/projects` — Claude Code session JSONL.
+    pub claude: PathBuf,
+    /// `~/.zai` — z.ai MCP server lifecycle logs.
+    pub zai: PathBuf,
+    /// `$KIMI_CODE_HOME` (default `~/.kimi-code`) — Kimi Code session store.
+    pub kimi: PathBuf,
+    /// `~/.copilot` — GitHub Copilot CLI session state.
+    pub copilot: PathBuf,
+}
+
+impl ScanRoots {
+    /// Resolve every root under a home directory, honoring `$KIMI_CODE_HOME`
+    /// the same way [`crate::vendors::kimi`] does.
+    pub fn for_home(home: &Path) -> Self {
+        let kimi = std::env::var_os("KIMI_CODE_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".kimi-code"));
+        Self {
+            claude: home.join(".claude").join("projects"),
+            zai: home.join(".zai"),
+            kimi,
+            copilot: home.join(".copilot"),
+        }
+    }
+}
+
 /// Scan using the real home directory and the current time.
 pub fn scan_default(plan: &str) -> Result<UsageSnapshot, ScanError> {
     let home = dirs::home_dir().ok_or(ScanError::NoHome)?;
-    let claude_root = home.join(".claude").join("projects");
-    let zai_root = home.join(".zai");
-    Ok(scan(&claude_root, &zai_root, plan, Utc::now()))
+    Ok(scan_roots(&ScanRoots::for_home(&home), plan, Utc::now()))
 }
 
-/// Pure-ish scan over explicit roots and clock — used by tests.
+/// Claude + GLM only. Kept as the narrow entry point for tests that don't
+/// exercise the other providers.
 pub fn scan(
     claude_root: &Path,
     zai_root: &Path,
     plan: &str,
     now: DateTime<Utc>,
 ) -> UsageSnapshot {
+    scan_roots(
+        &ScanRoots {
+            claude: claude_root.to_path_buf(),
+            zai: zai_root.to_path_buf(),
+            ..Default::default()
+        },
+        plan,
+        now,
+    )
+}
+
+/// Pure-ish scan over explicit roots and clock — used by tests.
+pub fn scan_roots(roots: &ScanRoots, plan: &str, now: DateTime<Utc>) -> UsageSnapshot {
+    let claude_root = roots.claude.as_path();
     let mut records: Vec<Record> = Vec::new();
     let files = find_jsonl(claude_root);
     let files_scanned = files.len();
@@ -388,7 +471,7 @@ pub fn scan(
         }
     }
 
-    build_snapshot(records, files_scanned, zai_root, plan, now)
+    build_snapshot(records, files_scanned, roots, plan, now)
 }
 
 fn find_jsonl(root: &Path) -> Vec<PathBuf> {
@@ -402,10 +485,11 @@ fn find_jsonl(root: &Path) -> Vec<PathBuf> {
 fn build_snapshot(
     records: Vec<Record>,
     files_scanned: usize,
-    zai_root: &Path,
+    roots: &ScanRoots,
     plan: &str,
     now: DateTime<Utc>,
 ) -> UsageSnapshot {
+    let zai_root = roots.zai.as_path();
     // ---- windows ----
     let cut_5h = now - Duration::hours(5);
     let cut_7d = now - Duration::days(7);
@@ -541,11 +625,11 @@ fn build_snapshot(
         .collect();
 
     // ---- sessions ----
-    // Aggregate Claude sessions, then merge a single GLM summary row, then
-    // order the combined set by most-recent activity (newest first). Unlike
-    // vendors such as Copilot (live quota only) or GLM (lifecycle logs), Claude
-    // is the only source with per-session token/cost data; GLM contributes one
-    // summary row so the Sessions view still spans providers.
+    // Every provider that keeps a local session store contributes rows, and the
+    // combined set is ordered by most-recent activity (newest first). What each
+    // provider can actually report differs — see `scan_kimi` / `scan_copilot`
+    // for the per-provider caveats — so token and cost figures are rendered to
+    // strings here and an em dash stands in for anything unavailable.
     let mut sessions: HashMap<String, SessionAgg> = HashMap::new();
     for r in &records {
         let agg = sessions.entry(r.session_id.clone()).or_insert(SessionAgg {
@@ -564,17 +648,16 @@ fn build_snapshot(
     }
     let session_count = sessions.len();
 
-    // Cap the per-session Claude rows to the most-recent N. The list is
+    // Cap the rows each provider contributes to the most-recent N. The list is
     // scrollable, not infinite — a long history would otherwise render an
     // unbounded DOM. The GLM summary row is added afterward and always kept.
-    const MAX_CLAUDE_ROWS: usize = 25;
     let mut claude: Vec<(&String, &SessionAgg)> = sessions.iter().collect();
     claude.sort_by(|a, b| b.1.last.cmp(&a.1.last));
 
-    // Each row carries the instant used for ordering, so the GLM summary row
-    // can interleave with Claude rows by recency. `when` is derived last.
+    // Each row carries the instant used for ordering, so rows from different
+    // providers interleave by recency. `when` is derived last.
     let mut rows: Vec<(DateTime<Utc>, SessionRow)> = Vec::new();
-    for (id, s) in claude.into_iter().take(MAX_CLAUDE_ROWS) {
+    for (id, s) in claude.into_iter().take(MAX_PROVIDER_ROWS) {
         rows.push((
             s.last,
             SessionRow {
@@ -585,6 +668,8 @@ fn build_snapshot(
                 cost: (s.cost * 100.0).round() / 100.0,
                 when: String::new(),
                 provider: "claude".to_string(),
+                tokens_text: fmt_tokens(s.tokens as f64),
+                cost_text: fmt_cost(s.cost),
             },
         ));
     }
@@ -603,9 +688,19 @@ fn build_snapshot(
                 cost: 0.0,
                 when: String::new(),
                 provider: "glm".to_string(),
+                tokens_text: EM_DASH.to_string(),
+                cost_text: EM_DASH.to_string(),
             },
         ));
     }
+
+    // ---- Kimi Code & Copilot ----
+    let kimi = scan_kimi(roots.kimi.as_path());
+    let copilot = scan_copilot(roots.copilot.as_path());
+    let kimi_total = ProviderTotals::of(&kimi);
+    let copilot_total = ProviderTotals::of(&copilot);
+    rows.extend(kimi);
+    rows.extend(copilot);
 
     // Newest first, then assign humanized `when` from the ordering instant.
     rows.sort_by(|a, b| b.0.cmp(&a.0));
@@ -628,7 +723,7 @@ fn build_snapshot(
         files_scanned,
     };
 
-    let providers = vec![
+    let mut providers = vec![
         Provider {
             name: "Claude Code".to_string(),
             status: "connected".to_string(),
@@ -639,11 +734,29 @@ fn build_snapshot(
         Provider {
             name: "GLM / z.ai".to_string(),
             status: "connected".to_string(),
-            tokens: "—".to_string(),
-            cost: "—".to_string(),
+            tokens: EM_DASH.to_string(),
+            cost: EM_DASH.to_string(),
             sessions: glm.sessions as usize,
         },
     ];
+    if kimi_total.sessions > 0 {
+        providers.push(Provider {
+            name: "Kimi Code".to_string(),
+            status: "connected".to_string(),
+            tokens: fmt_tokens(kimi_total.tokens as f64),
+            cost: EM_DASH.to_string(),
+            sessions: kimi_total.sessions,
+        });
+    }
+    if copilot_total.sessions > 0 {
+        providers.push(Provider {
+            name: "GitHub Copilot".to_string(),
+            status: "connected".to_string(),
+            tokens: fmt_tokens(copilot_total.tokens as f64),
+            cost: EM_DASH.to_string(),
+            sessions: copilot_total.sessions,
+        });
+    }
 
     let kpi = Kpi {
         session_tokens: fmt_tokens(s_used as f64),
@@ -679,6 +792,338 @@ fn weekday_abbr(num_from_monday: u32) -> String {
         _ => "Sun",
     }
     .to_string()
+}
+
+// ---------- Kimi Code ----------
+
+/// Per-turn token usage the Kimi Code CLI writes to a session's wire log.
+struct KimiUsage {
+    tokens: u64,
+    model: String,
+    at: DateTime<Utc>,
+}
+
+/// Read the most-recent Kimi Code sessions from the CLI's local session store.
+///
+/// Layout is `<root>/sessions/wd_<name>_<hash>/session_<uuid>/` holding a small
+/// `state.json` (cwd, timestamps, title) plus one `agents/<agent>/wire.jsonl`
+/// per agent — the main loop and each subagent. Wire logs carry `usage.record`
+/// events with a per-turn token breakdown, so Kimi rows are exact in the same
+/// way Claude rows are; a subagent's usage lives only in its own wire log, so
+/// summing across every agent counts each turn once.
+///
+/// Wire logs run to hundreds of KB, so only the newest sessions (by
+/// `state.json`'s `updatedAt`) are opened — the rest are capped away anyway.
+fn scan_kimi(root: &Path) -> Vec<(DateTime<Utc>, SessionRow)> {
+    let pattern = format!("{}/sessions/*/session_*/state.json", root.to_string_lossy());
+    let states: Vec<PathBuf> = match glob::glob(&pattern) {
+        Ok(p) => p.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    };
+
+    // (updated_at, session_dir, id, cwd) for each readable state file.
+    let mut candidates: Vec<(DateTime<Utc>, PathBuf, String, String)> = Vec::new();
+    for sp in &states {
+        let Ok(raw) = std::fs::read_to_string(sp) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+        if v["archived"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let updated = v["updatedAt"]
+            .as_i64()
+            .or_else(|| v["createdAt"].as_i64())
+            .and_then(DateTime::from_timestamp_millis);
+        let Some(updated) = updated else { continue };
+        let Some(dir) = sp.parent() else { continue };
+        let id = v["id"].as_str().unwrap_or_default().to_string();
+        let cwd = v["cwd"].as_str().unwrap_or_default().to_string();
+        candidates.push((updated, dir.to_path_buf(), id, cwd));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut rows = Vec::new();
+    for (updated, dir, id, cwd) in candidates.into_iter().take(MAX_PROVIDER_ROWS) {
+        let usage = read_kimi_usage(&dir);
+        let tokens: u64 = usage.iter().map(|u| u.tokens).sum();
+        // Order by real activity when the wire logs have any; `updatedAt` also
+        // moves for non-LLM edits (title changes, archiving).
+        let last = usage.iter().map(|u| u.at).max().unwrap_or(updated);
+        let model = usage
+            .iter()
+            .max_by_key(|u| u.at)
+            .map(|u| u.model.clone())
+            .unwrap_or_default();
+        rows.push((
+            last,
+            SessionRow {
+                id: kimi_short_id(&id, &dir),
+                project: project_from_cwd(&cwd),
+                model,
+                tokens,
+                cost: 0.0,
+                when: String::new(),
+                provider: "kimi".to_string(),
+                tokens_text: if tokens > 0 {
+                    fmt_tokens(tokens as f64)
+                } else {
+                    EM_DASH.to_string()
+                },
+                // Kimi Code bills against a flat-rate coding plan, not per
+                // token — a dollar figure here would be invented.
+                cost_text: EM_DASH.to_string(),
+            },
+        ));
+    }
+    rows
+}
+
+/// Sum `usage.record` events across every agent's wire log in one session dir.
+fn read_kimi_usage(session_dir: &Path) -> Vec<KimiUsage> {
+    let pattern = format!("{}/agents/*/wire.jsonl", session_dir.to_string_lossy());
+    let wires: Vec<PathBuf> = match glob::glob(&pattern) {
+        Ok(p) => p.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for wire in &wires {
+        for line in read_lines(wire) {
+            // Cheap reject before the JSON parse — usage records are a small
+            // fraction of a wire log's lines.
+            if !line.contains("\"usage.record\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if v["type"].as_str() != Some("usage.record") {
+                continue;
+            }
+            let u = &v["usage"];
+            let tokens = u["inputOther"].as_u64().unwrap_or(0)
+                + u["inputCacheRead"].as_u64().unwrap_or(0)
+                + u["inputCacheCreation"].as_u64().unwrap_or(0)
+                + u["output"].as_u64().unwrap_or(0);
+            let Some(at) = v["time"].as_i64().and_then(DateTime::from_timestamp_millis) else {
+                continue;
+            };
+            // Models are reported namespaced (`kimi-code/k3`); the badge wants
+            // the bare name.
+            let model = v["model"]
+                .as_str()
+                .unwrap_or("")
+                .rsplit('/')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            out.push(KimiUsage { tokens, model, at });
+        }
+    }
+    out
+}
+
+/// `session_<uuid>` → the first 8 chars of the uuid, falling back to the
+/// directory name when `state.json` has no id.
+fn kimi_short_id(id: &str, dir: &Path) -> String {
+    let raw = if id.is_empty() {
+        dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    } else {
+        id.to_string()
+    };
+    raw.trim_start_matches("session_").chars().take(8).collect()
+}
+
+// ---------- GitHub Copilot ----------
+
+/// Read the most-recent Copilot CLI sessions from `<root>/session-state`.
+///
+/// Each session is a directory of append-only `events.jsonl`. Project, model
+/// and timing come from `session.start` / `session.resume`; **token counts only
+/// appear in `session.shutdown`**, which older CLI builds omit entirely and a
+/// still-running session hasn't written yet. Those rows report `—` rather than
+/// a fabricated zero.
+///
+/// A session that is resumed emits one shutdown per process. Current builds
+/// restore the running totals on resume, so those snapshots are cumulative and
+/// must not be summed; older builds restart the counters from zero, so the
+/// final snapshot can be *lower* than an earlier one. Taking the maximum is
+/// correct for the first case and recovers the real peak in the second.
+fn scan_copilot(root: &Path) -> Vec<(DateTime<Utc>, SessionRow)> {
+    let pattern = format!("{}/session-state/*/events.jsonl", root.to_string_lossy());
+    let mut logs: Vec<PathBuf> = match glob::glob(&pattern) {
+        Ok(p) => p.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    };
+    // Newest first by file mtime so the cap keeps the interesting sessions;
+    // the authoritative instant still comes from the events themselves.
+    logs.sort_by_key(|p| {
+        std::cmp::Reverse(
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        )
+    });
+
+    let mut rows = Vec::new();
+    for log in logs.into_iter().take(MAX_PROVIDER_ROWS) {
+        let mut cwd = String::new();
+        let mut model = String::new();
+        let mut last: Option<DateTime<Utc>> = None;
+        let mut tokens: Option<u64> = None;
+        let mut premium: Option<f64> = None;
+
+        for line in read_lines(&log) {
+            // Event logs reach single-digit MB and are re-read on every
+            // refresh, so the timestamp — needed from every line — is pulled
+            // out by substring scan and only the handful of `session.*` lines
+            // are handed to the JSON parser.
+            if let Some(ts) = extract_timestamp(&line) {
+                last = Some(match last {
+                    Some(prev) if prev > ts => prev,
+                    _ => ts,
+                });
+            }
+            if !line.contains("\"type\":\"session.") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let data = &v["data"];
+            match v["type"].as_str() {
+                Some("session.start") | Some("session.resume") => {
+                    if let Some(c) = data["context"]["cwd"].as_str() {
+                        cwd = c.to_string();
+                    }
+                    if let Some(m) = data["selectedModel"].as_str() {
+                        model = m.to_string();
+                    }
+                }
+                Some("session.shutdown") => {
+                    if let Some(t) = copilot_shutdown_tokens(data) {
+                        tokens = Some(tokens.map_or(t, |prev: u64| prev.max(t)));
+                    }
+                    if let Some(p) = data["totalPremiumRequests"].as_f64() {
+                        premium = Some(premium.map_or(p, |prev: f64| prev.max(p)));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(last) = last else { continue };
+        let id = log
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().chars().take(8).collect())
+            .unwrap_or_default();
+        rows.push((
+            last,
+            SessionRow {
+                id,
+                project: project_from_cwd(&cwd),
+                // `claude-opus-4.7` → the `opus` badge the UI already styles.
+                model: if model.is_empty() {
+                    String::new()
+                } else {
+                    family_of(&model).to_string()
+                },
+                tokens: tokens.unwrap_or(0),
+                cost: 0.0,
+                when: String::new(),
+                provider: "copilot".to_string(),
+                tokens_text: tokens.map(|t| fmt_tokens(t as f64)).unwrap_or_else(|| EM_DASH.to_string()),
+                // Copilot meters premium requests, not dollars.
+                cost_text: premium
+                    .map(|p| format!("{} premium", trim_float(p)))
+                    .unwrap_or_else(|| EM_DASH.to_string()),
+            },
+        ));
+    }
+    rows
+}
+
+/// Total tokens from one `session.shutdown` payload.
+///
+/// `modelMetrics[*].usage.inputTokens` already folds in cache reads and writes,
+/// so input + output is the whole session. Builds that predate `modelMetrics`
+/// still carry the flat `tokenDetails` breakdown; anything older reports
+/// neither and yields `None`.
+fn copilot_shutdown_tokens(data: &Value) -> Option<u64> {
+    if let Some(metrics) = data["modelMetrics"].as_object() {
+        let mut total = 0u64;
+        let mut any = false;
+        for m in metrics.values() {
+            let usage = &m["usage"];
+            if usage.is_null() {
+                continue;
+            }
+            any = true;
+            total += usage["inputTokens"].as_u64().unwrap_or(0)
+                + usage["outputTokens"].as_u64().unwrap_or(0);
+        }
+        if any {
+            return Some(total);
+        }
+    }
+    let details = data["tokenDetails"].as_object()?;
+    let mut total = 0u64;
+    for d in details.values() {
+        total += d["tokenCount"].as_u64().unwrap_or(0);
+    }
+    Some(total)
+}
+
+// ---------- Shared helpers ----------
+
+/// Read a file as lines, yielding nothing when it can't be opened. Streaming
+/// keeps multi-hundred-KB wire/event logs off the heap all at once.
+fn read_lines(path: &Path) -> impl Iterator<Item = String> {
+    use std::io::BufRead;
+    std::fs::File::open(path)
+        .ok()
+        .map(|f| std::io::BufReader::new(f).lines().map_while(Result::ok))
+        .into_iter()
+        .flatten()
+}
+
+/// Pull an event's own RFC3339 `"timestamp"` out of a JSONL line without
+/// parsing it.
+///
+/// Searches from the right because Copilot writes the top-level `timestamp`
+/// near the end of each object, after the `data` payload — which may carry
+/// timestamps of its own (tool inputs record epoch millis, unquoted, so they
+/// can't match this pattern anyway).
+fn extract_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    const KEY: &str = "\"timestamp\":\"";
+    let start = line.rfind(KEY)? + KEY.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    DateTime::parse_from_rfc3339(&rest[..end])
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+/// Last path component of a working directory — the project name, as opposed
+/// to Claude's dash-encoded directory names that [`clean_project`] handles.
+fn project_from_cwd(cwd: &str) -> String {
+    let name = Path::new(cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if name.is_empty() {
+        EM_DASH.to_string()
+    } else {
+        name.chars().take(28).collect()
+    }
+}
+
+/// `7.5` → `"7.5"`, `7.0` → `"7"`. Premium-request counts are fractional but
+/// usually whole, and a trailing `.0` reads like noise.
+fn trim_float(v: f64) -> String {
+    if (v.fract()).abs() < f64::EPSILON {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
 }
 
 /// Scan z.ai MCP logs. Returns the aggregate `Glm` and the most recent event
@@ -1169,7 +1614,7 @@ mod tests {
         assert_eq!(snap.kpi.session_cost, "$0.05");
     }
 
-    // ── Session cap: MAX_CLAUDE_ROWS = 25 ──
+    // ── Session cap: MAX_PROVIDER_ROWS = 25 ──
 
     #[test]
     fn session_rows_capped_at_max() {
@@ -1191,7 +1636,7 @@ mod tests {
         }
 
         let snap = scan(&claude, &zai, "max5x", now);
-        // MAX_CLAUDE_ROWS = 25 → 25 Claude rows (no GLM row since zai is empty).
+        // MAX_PROVIDER_ROWS = 25 → 25 Claude rows (no GLM row since zai is empty).
         assert_eq!(snap.sessions.len(), 25);
         // Session IDs are "sess00".."sess29" → 6 chars after take(8) truncation.
         assert_eq!(snap.sessions[0].id.len(), 6);
@@ -1362,5 +1807,343 @@ mod tests {
         let snap = scan(&claude, &zai, "max5x", now);
         // Only the usage-bearing line counted → 300 tokens.
         assert_eq!(snap.kpi.session_tokens, "300");
+    }
+
+    // ── Kimi Code session store ──
+
+    /// Write a Kimi session: `state.json` plus one wire log per agent.
+    fn write_kimi_session(
+        kimi: &Path,
+        workdir: &str,
+        session: &str,
+        state: &str,
+        agents: &[(&str, &[&str])],
+    ) {
+        let dir = kimi.join("sessions").join(workdir).join(session);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("state.json"), state).unwrap();
+        for (agent, lines) in agents {
+            let adir = dir.join("agents").join(agent);
+            std::fs::create_dir_all(&adir).unwrap();
+            let mut f = std::fs::File::create(adir.join("wire.jsonl")).unwrap();
+            for l in *lines {
+                writeln!(f, "{l}").unwrap();
+            }
+        }
+    }
+
+    fn kimi_usage_line(model: &str, other: u64, out: u64, cache: u64, time_ms: i64) -> String {
+        format!(
+            r#"{{"type":"usage.record","model":"{model}","usage":{{"inputOther":{other},"output":{out},"inputCacheRead":{cache},"inputCacheCreation":0}},"usageScope":"turn","time":{time_ms}}}"#
+        )
+    }
+
+    fn roots_with(kimi: &Path, copilot: &Path) -> ScanRoots {
+        ScanRoots {
+            claude: kimi.join("__no_claude__"),
+            zai: kimi.join("__no_zai__"),
+            kimi: kimi.to_path_buf(),
+            copilot: copilot.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn kimi_session_sums_usage_across_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kimi = tmp.path().join("kimi");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 2026-06-17T19:00:00Z and 19:30:00Z.
+        let t1 = 1_781_722_800_000i64;
+        let t2 = 1_781_724_600_000i64;
+
+        write_kimi_session(
+            &kimi,
+            "wd_myproj_abc123",
+            "session_11112222-3333-4444-5555-666677778888",
+            r#"{"id":"session_11112222-3333-4444-5555-666677778888","cwd":"/Volumes/dev/myproj","createdAt":1781722000000,"updatedAt":1781724600000,"archived":false}"#,
+            &[
+                ("main", &[&kimi_usage_line("kimi-code/k3", 1000, 200, 800, t1)]),
+                // A subagent's usage lives only in its own wire log.
+                ("agent-0", &[&kimi_usage_line("kimi-code/k3", 500, 100, 400, t2)]),
+            ],
+        );
+
+        let snap = scan_roots(&roots_with(&kimi, &tmp.path().join("nocopilot")), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        let row = &snap.sessions[0];
+        assert_eq!(row.provider, "kimi");
+        assert_eq!(row.project, "myproj");
+        // main (1000+200+800) + agent-0 (500+100+400) = 3000.
+        assert_eq!(row.tokens, 3000);
+        assert_eq!(row.tokens_text, "3K");
+        // Namespaced model name is reduced to the badge-friendly bare name.
+        assert_eq!(row.model, "k3");
+        // Flat-rate plan — no invented dollar figure.
+        assert_eq!(row.cost_text, "—");
+        // Ordered by the newest usage record, not `updatedAt`.
+        assert_eq!(row.when, "30m ago");
+        assert_eq!(row.id, "11112222");
+    }
+
+    #[test]
+    fn kimi_skips_archived_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kimi = tmp.path().join("kimi");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        write_kimi_session(
+            &kimi,
+            "wd_gone_abc123",
+            "session_deadbeef-0000-0000-0000-000000000000",
+            r#"{"id":"session_deadbeef-0000-0000-0000-000000000000","cwd":"/tmp/gone","updatedAt":1781724600000,"archived":true}"#,
+            &[("main", &[&kimi_usage_line("kimi-code/k3", 10, 10, 0, 1781724600000)])],
+        );
+
+        let snap = scan_roots(&roots_with(&kimi, &tmp.path().join("nocopilot")), "max5x", now);
+        assert!(snap.sessions.is_empty(), "archived sessions must not surface");
+    }
+
+    #[test]
+    fn kimi_session_without_usage_records_reports_em_dash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let kimi = tmp.path().join("kimi");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // A freshly-started session: state written, no LLM turn yet.
+        write_kimi_session(
+            &kimi,
+            "wd_fresh_abc123",
+            "session_aaaabbbb-0000-0000-0000-000000000000",
+            r#"{"id":"session_aaaabbbb-0000-0000-0000-000000000000","cwd":"/tmp/fresh","updatedAt":1781724600000}"#,
+            &[("main", &[r#"{"type":"metadata","protocol_version":"1.5"}"#])],
+        );
+
+        let snap = scan_roots(&roots_with(&kimi, &tmp.path().join("nocopilot")), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        assert_eq!(snap.sessions[0].tokens_text, "—");
+        // Falls back to `updatedAt` for ordering.
+        assert_eq!(snap.sessions[0].when, "30m ago");
+    }
+
+    // ── Copilot CLI session state ──
+
+    fn write_copilot_session(copilot: &Path, id: &str, lines: &[&str]) {
+        let dir = copilot.join("session-state").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("events.jsonl")).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+    }
+
+    #[test]
+    fn copilot_session_uses_highest_cumulative_shutdown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copilot = tmp.path().join("copilot");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        write_copilot_session(
+            &copilot,
+            "64a3ccbe-57bf-481b-b3d1-d40a010bc927",
+            &[
+                r#"{"type":"session.start","data":{"selectedModel":"claude-opus-4.7","context":{"cwd":"/Volumes/dev/agent-status"}},"timestamp":"2026-06-17T18:00:00.000Z"}"#,
+                // First run's snapshot…
+                r#"{"type":"session.shutdown","data":{"totalPremiumRequests":3,"modelMetrics":{"claude-opus-4.7":{"usage":{"inputTokens":1000,"outputTokens":100}}}},"timestamp":"2026-06-17T18:30:00.000Z"}"#,
+                r#"{"type":"session.resume","data":{"selectedModel":"claude-opus-4.7","context":{"cwd":"/Volumes/dev/agent-status"}},"timestamp":"2026-06-17T18:40:00.000Z"}"#,
+                // …superseded by the second, which is cumulative, not additive.
+                r#"{"type":"session.shutdown","data":{"totalPremiumRequests":7.5,"modelMetrics":{"claude-opus-4.7":{"usage":{"inputTokens":1500,"outputTokens":300}}}},"timestamp":"2026-06-17T19:00:00.000Z"}"#,
+            ],
+        );
+
+        let snap = scan_roots(&roots_with(&tmp.path().join("nokimi"), &copilot), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        let row = &snap.sessions[0];
+        assert_eq!(row.provider, "copilot");
+        assert_eq!(row.project, "agent-status");
+        // Highest shutdown only: 1500 + 300. `inputTokens` already folds in cache.
+        assert_eq!(row.tokens, 1800);
+        // The badge reuses the Claude family styling.
+        assert_eq!(row.model, "opus");
+        assert_eq!(row.cost_text, "7.5 premium");
+        assert_eq!(row.when, "1h ago");
+    }
+
+    #[test]
+    fn copilot_ignores_a_shutdown_whose_counters_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copilot = tmp.path().join("copilot");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // An older build: the session is reopened and closed without doing any
+        // work, and its final snapshot reports zero rather than the real total.
+        write_copilot_session(
+            &copilot,
+            "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee",
+            &[
+                r#"{"type":"session.start","data":{"selectedModel":"claude-sonnet-4.6","context":{"cwd":"/Volumes/dev/reset"}},"timestamp":"2026-06-17T17:00:00.000Z"}"#,
+                r#"{"type":"session.shutdown","data":{"totalPremiumRequests":1,"tokenDetails":{"input":{"tokenCount":900},"output":{"tokenCount":100}}},"timestamp":"2026-06-17T18:00:00.000Z"}"#,
+                r#"{"type":"session.shutdown","data":{"totalPremiumRequests":0,"tokenDetails":{"input":{"tokenCount":0},"output":{"tokenCount":0}}},"timestamp":"2026-06-17T19:00:00.000Z"}"#,
+            ],
+        );
+
+        let snap = scan_roots(&roots_with(&tmp.path().join("nokimi"), &copilot), "max5x", now);
+        assert_eq!(snap.sessions[0].tokens, 1000);
+        assert_eq!(snap.sessions[0].cost_text, "1 premium");
+    }
+
+    #[test]
+    fn copilot_running_session_reports_em_dash_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copilot = tmp.path().join("copilot");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // No shutdown event yet — tokens are genuinely unknown, not zero.
+        write_copilot_session(
+            &copilot,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            &[
+                r#"{"type":"session.start","data":{"selectedModel":"claude-sonnet-4.6","context":{"cwd":"/Volumes/dev/live"}},"timestamp":"2026-06-17T19:00:00.000Z"}"#,
+                r#"{"type":"assistant.turn_start","data":{"turnId":"0"},"timestamp":"2026-06-17T19:30:00.000Z"}"#,
+            ],
+        );
+
+        let snap = scan_roots(&roots_with(&tmp.path().join("nokimi"), &copilot), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        assert_eq!(snap.sessions[0].tokens_text, "—");
+        assert_eq!(snap.sessions[0].cost_text, "—");
+        assert_eq!(snap.sessions[0].model, "sonnet");
+        // Ordered by the newest event, not the start.
+        assert_eq!(snap.sessions[0].when, "30m ago");
+    }
+
+    #[test]
+    fn copilot_falls_back_to_token_details() {
+        let tmp = tempfile::tempdir().unwrap();
+        let copilot = tmp.path().join("copilot");
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // An older CLI build: `tokenDetails` present, `modelMetrics.usage` absent.
+        write_copilot_session(
+            &copilot,
+            "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee",
+            &[
+                r#"{"type":"session.start","data":{"selectedModel":"claude-sonnet-4.6","context":{"cwd":"/Volumes/dev/old"}},"timestamp":"2026-06-17T19:00:00.000Z"}"#,
+                r#"{"type":"session.shutdown","data":{"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":1}}},"tokenDetails":{"input":{"tokenCount":100},"cache_read":{"tokenCount":50},"output":{"tokenCount":25}}},"timestamp":"2026-06-17T19:30:00.000Z"}"#,
+            ],
+        );
+
+        let snap = scan_roots(&roots_with(&tmp.path().join("nokimi"), &copilot), "max5x", now);
+        assert_eq!(snap.sessions[0].tokens, 175);
+        // No premium-request figure in this build.
+        assert_eq!(snap.sessions[0].cost_text, "—");
+    }
+
+    // ── Cross-provider ordering ──
+
+    #[test]
+    fn rows_from_every_provider_interleave_by_recency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        let zai = tmp.path().join("zai");
+        let kimi = tmp.path().join("kimi");
+        let copilot = tmp.path().join("copilot");
+        std::fs::create_dir_all(&zai).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Claude at 19:00, Kimi at 18:00, Copilot at 17:00.
+        write_jsonl(
+            &claude,
+            "proj-a",
+            &[r#"{"timestamp":"2026-06-17T19:00:00.000Z","sessionId":"claude01","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#],
+        );
+        write_kimi_session(
+            &kimi,
+            "wd_kproj_abc123",
+            "session_kkkkkkkk-0000-0000-0000-000000000000",
+            r#"{"id":"session_kkkkkkkk-0000-0000-0000-000000000000","cwd":"/tmp/kproj","updatedAt":1781719200000}"#,
+            &[("main", &[&kimi_usage_line("kimi-code/k3", 100, 50, 0, 1_781_719_200_000)])],
+        );
+        write_copilot_session(
+            &copilot,
+            "cccccccc-0000-0000-0000-000000000000",
+            &[r#"{"type":"session.start","data":{"selectedModel":"claude-opus-4.7","context":{"cwd":"/tmp/cproj"}},"timestamp":"2026-06-17T17:00:00.000Z"}"#],
+        );
+
+        let snap = scan_roots(&ScanRoots { claude, zai, kimi, copilot }, "max5x", now);
+        let order: Vec<&str> = snap.sessions.iter().map(|s| s.provider.as_str()).collect();
+        assert_eq!(order, vec!["claude", "kimi", "copilot"]);
+
+        // Each contributing provider gets a Providers-tab row.
+        let names: Vec<&str> = snap.providers.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"Kimi Code"), "got {names:?}");
+        assert!(names.contains(&"GitHub Copilot"), "got {names:?}");
+    }
+
+    #[test]
+    fn missing_provider_roots_are_silently_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-06-17T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snap = scan_roots(
+            &ScanRoots {
+                claude: tmp.path().join("nope"),
+                zai: tmp.path().join("nope"),
+                kimi: tmp.path().join("nope"),
+                copilot: tmp.path().join("nope"),
+            },
+            "pro",
+            now,
+        );
+        assert!(snap.sessions.is_empty());
+        assert_eq!(snap.providers.len(), 2, "only the always-present rows");
+    }
+
+    // ── project_from_cwd / trim_float ──
+
+    #[test]
+    fn project_from_cwd_takes_last_component() {
+        assert_eq!(project_from_cwd("/Volumes/dev/projects/myproj"), "myproj");
+        assert_eq!(project_from_cwd(""), "—");
+        assert_eq!(project_from_cwd(&format!("/tmp/{}", "x".repeat(50))).len(), 28);
+    }
+
+    #[test]
+    fn extract_timestamp_prefers_the_trailing_top_level_key() {
+        // `data` carries an unquoted epoch-millis timestamp; the event's own
+        // RFC3339 one trails it.
+        let line = r#"{"type":"hook.start","data":{"timestamp":1781974216372},"id":"x","timestamp":"2026-06-17T19:30:00.000Z","parentId":"y"}"#;
+        let got = extract_timestamp(line).unwrap();
+        assert_eq!(got.to_rfc3339(), "2026-06-17T19:30:00+00:00");
+    }
+
+    #[test]
+    fn extract_timestamp_returns_none_without_one() {
+        assert!(extract_timestamp(r#"{"type":"x","data":{}}"#).is_none());
+        // Present but unparseable — not a panic, just no timestamp.
+        assert!(extract_timestamp(r#"{"timestamp":"not-a-date"}"#).is_none());
+    }
+
+    #[test]
+    fn trim_float_drops_trailing_zero() {
+        assert_eq!(trim_float(7.0), "7");
+        assert_eq!(trim_float(7.5), "7.5");
+        assert_eq!(trim_float(0.0), "0");
     }
 }

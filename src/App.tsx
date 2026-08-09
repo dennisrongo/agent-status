@@ -475,8 +475,8 @@ export default function App() {
                       </div>
                     </div>
                     <div>
-                      <div className="s-num">{isGlm ? "—" : fmtTok(s.tokens)}</div>
-                      <div className="s-cost">{isGlm ? "—" : `$${s.cost.toFixed(2)}`}</div>
+                      <div className="s-num">{s.tokensText}</div>
+                      <div className="s-cost">{s.costText}</div>
                     </div>
                   </div>
                 );
@@ -485,9 +485,12 @@ export default function App() {
             <div className="note">
               <InfoIcon />
               <p>
-                Activity spans all providers with local session data. Claude tokens include
-                input, output and cache read/write (cost estimated from standard-tier pricing).
-                GLM logs are server-lifecycle only. Copilot usage is tracked on the Providers tab.
+                Activity spans every provider that keeps a local session log. Claude and Kimi
+                record per-turn tokens (input, output and cache read/write); Claude cost is
+                estimated from standard-tier pricing, while Kimi bills a flat-rate plan.
+                Copilot totals are written when a session ends, so a running one shows —, and
+                it meters premium requests rather than dollars. GLM logs are server-lifecycle
+                only; Alibaba has no local session log — see the Providers tab for both.
               </p>
             </div>
           </section>
@@ -1068,11 +1071,4 @@ function InfoIcon() {
       <path d="M12 16v-4M12 8h.01" />
     </svg>
   );
-}
-
-function fmtTok(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
-  return String(n);
 }
