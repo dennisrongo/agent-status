@@ -121,6 +121,11 @@ pub struct AppState {
     /// the process with blocking work. Between fetches we serve the cached
     /// reading, matching the Copilot and Claude-live throttles.
     pub alibaba_attempted_at: Option<DateTime<Utc>>,
+    /// When an automatic Kimi Code token *refresh* was last attempted. Kimi
+    /// access tokens live only ~15 min, so an idle CLI leaves a dead token
+    /// behind; we renew it in place, but a dead refresh token isn't retried
+    /// against the token endpoint more than once per `KIMI_REFRESH_MIN_SECS`.
+    pub kimi_refresh_attempted_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -153,6 +158,12 @@ pub const COPILOT_MIN_SECS: i64 = 120;
 /// Copilot and Claude-live throttles.
 pub const ALIBABA_MIN_SECS: i64 = 120;
 
+/// Minimum seconds between automatic Kimi Code token-refresh attempts, so an
+/// expired or revoked refresh token can't be hammered against the token
+/// endpoint on every visible refresh tick. Mirrors
+/// `LIVE_CLAUDE_REFRESH_MIN_SECS`.
+pub const KIMI_REFRESH_MIN_SECS: i64 = 60;
+
 /// Longest a cached Copilot reading is served while live fetches keep failing.
 /// Short blips ride on the cache; beyond this the card admits it can't refresh
 /// rather than presenting an increasingly stale quota (or a window that has
@@ -181,6 +192,7 @@ impl AppState {
             alibaba_last_good: None,
             alibaba_last_good_at: None,
             alibaba_attempted_at: None,
+            kimi_refresh_attempted_at: None,
         }
     }
 }

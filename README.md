@@ -130,6 +130,8 @@ Each provider reports different things. Local data comes from parsing logs on di
 | --- | --- | --- |
 | Usage / quota | Bailian CLI (`bl`) — `bl auth` login | ✅ real (per-account) |
 
+> The console session expires after a few hours, but with OpenAPI AK/SK configured (Settings → Enable auto-refresh) the CLI renews it automatically — the app also retries once on an expired-session error before declaring it dead.
+
 ### Kimi Code
 
 | Metric | Source | Real? |
@@ -137,7 +139,7 @@ Each provider reports different things. Local data comes from parsing logs on di
 | Weekly / 5h quota | Kimi `coding/v1/usages` (the Kimi Code CLI's own OAuth login) | ✅ real (per-user) |
 | Extra Usage balance | same endpoint (`boosterWallet`) | ✅ real |
 
-> The Kimi login is **read-only** here — the CLI owns the refresh flow, so an expired login is renewed by opening Kimi Code or running `kimi login`.
+> Kimi access tokens live only ~15 minutes, so an expired login is **renewed in place automatically** using the CLI's stored refresh token (written back to the shared credentials file). Only a dead refresh token asks you to open Kimi Code or run `kimi login` again.
 
 > GLM, Copilot, and Alibaba expose no per-token local cost — only their live quota meters.
 

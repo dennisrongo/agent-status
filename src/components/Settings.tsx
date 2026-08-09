@@ -461,7 +461,7 @@ export function Settings({
               </div>
             </div>
             <p style={{ margin: "8px 0 0", fontSize: "10.5px", color: "var(--faint)" }}>
-              The token is read-only here — an expired login is renewed by opening Kimi Code or running <code>kimi login</code> again.
+              An expired login is renewed in place automatically — if that fails, open Kimi Code or run <code>kimi login</code> again.
             </p>
           </InfoTip></span>
           <span className={`key-status ${kimiVendorStatus?.configured && !kimiVendorStatus.authExpired ? "set" : ""}`}>

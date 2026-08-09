@@ -174,6 +174,23 @@ pub fn auth_status() -> CliStatus {
         return CliStatus { installed: true, authenticated: false, auth_hint: None, has_open_api: false };
     };
 
+    // The AK/SK may only be visible via the config file the CLI reports (the
+    // status JSON doesn't always carry it) — read that as the fallback.
+    let config_has_ak = v
+        .get("config_file")
+        .and_then(|f| f.as_str())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|cfg| serde_json::from_str::<Value>(&cfg).ok())
+        .and_then(|cfg| cfg.get("access_key_id").and_then(|k| k.as_str()).map(|k| !k.is_empty()))
+        .unwrap_or(false);
+
+    interpret_auth_status(&v, config_has_ak)
+}
+
+/// Pure interpretation of the `bl auth status --output json` payload, split
+/// from the subprocess so the detection logic is unit-testable. `config_has_ak`
+/// carries the config-file fallback read.
+fn interpret_auth_status(v: &Value, config_has_ak: bool) -> CliStatus {
     let authenticated = v.get("authenticated").and_then(|a| a.as_bool()).unwrap_or(false);
     // Build a hint from the masked key or console token — never the real value.
     let auth_hint = v
@@ -188,17 +205,16 @@ pub fn auth_status() -> CliStatus {
                 .map(|m| format!("api key · {m}"))
         });
 
-    // OpenAPI AK/SK lets the CLI auto-refresh the console session token.
-    // Detect from the auth status output (an `open_api` section) or from the
-    // config file the CLI reports (a non-empty `access_key_id` field).
-    let has_open_api = v.get("open_api").is_some_and(|v| !v.is_null())
+    // OpenAPI AK/SK lets the CLI auto-refresh the console session token. The
+    // current CLI reports them under `openapi`; `open_api` and a top-level
+    // `access_key_id` are accepted for other builds, and `config_has_ak`
+    // covers builds that report neither.
+    let has_open_api = v
+        .get("openapi")
+        .or_else(|| v.get("open_api"))
+        .is_some_and(|v| !v.is_null())
         || v.get("access_key_id").is_some_and(|v| !v.is_null())
-        || v.get("config_file")
-            .and_then(|f| f.as_str())
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|cfg| serde_json::from_str::<Value>(&cfg).ok())
-            .and_then(|cfg| cfg.get("access_key_id").and_then(|k| k.as_str()).map(|k| !k.is_empty()))
-            .unwrap_or(false);
+        || config_has_ak;
 
     CliStatus { installed: true, authenticated, auth_hint, has_open_api }
 }
@@ -334,20 +350,43 @@ pub fn install() -> Result<String, String> {
 /// still says `authenticated: true`. Since only a usage call discovers this,
 /// `fetch()` is the authority — when the command fails with the
 /// console-expired error we return a terminal `auth_expired` status.
+///
+/// Session renewal: the CLI renews the console session IN PLACE during
+/// `bl console call` when OpenAPI AK/SK are configured (a signed
+/// `GenerateCLIAccessToken` OpenAPI call, written back to its own config) —
+/// but it doesn't retry that renewal when the signed call itself fails
+/// transiently. So on an expired-session error with AK/SK present we invoke
+/// the console call once more, giving the CLI's own renewal a second shot
+/// before declaring the session dead (the same outcome as Kimi's in-place
+/// refresh, using the CLI's machinery rather than re-implementing Alibaba's
+/// RPC request signing). Without AK/SK a retry can only fail the same way, so
+/// we skip it.
 pub fn fetch() -> VendorStatus {
     let Some(cli) = find_cli() else {
         return VendorStatus::not_configured();
     };
-    match run_bl(&cli, &[
+    match console_call(&cli) {
+        Ok(plan) => parse(&plan, Utc::now()),
+        Err(e) if e.is_console_expired() => {
+            if auth_status().has_open_api {
+                if let Ok(plan) = console_call(&cli) {
+                    return parse(&plan, Utc::now());
+                }
+            }
+            expired_status(&e)
+        }
+        Err(e) => VendorStatus::failed(format!("bl console call: {e}")),
+    }
+}
+
+/// One `bl console call` for the Token Plan usage API.
+fn console_call(cli: &std::path::Path) -> Result<Value, BlError> {
+    run_bl(cli, &[
         "console", "call",
         "--api", TOKEN_PLAN_USAGE_API,
         "--data", "{}",
         "--output", "json",
-    ]) {
-        Ok(plan) => parse(&plan, Utc::now()),
-        Err(e) if e.is_console_expired() => expired_status(&e),
-        Err(e) => VendorStatus::failed(format!("bl console call: {e}")),
-    }
+    ])
 }
 
 /// Structured error from a `bl` invocation: the CLI's JSON
@@ -575,6 +614,57 @@ mod tests {
         assert_eq!(s.secondary, "session expired");
         // The hint is the actionable line — surface it verbatim.
         assert!(s.error.unwrap().contains("bl auth login --console"));
+    }
+
+    // ── auth status interpretation ──
+
+    #[test]
+    fn auth_status_detects_openapi_section_current_shape() {
+        // Verbatim shape from `bl auth status --output json` (CLI 1.13.0): the
+        // OpenAPI credentials live under an `openapi` key (no underscore).
+        let v = json!({
+            "authenticated": true,
+            "config_file": "C:\\Users\\x\\.bailian\\config.json",
+            "api_key": { "source": "env", "masked": "sk-s...9WXM" },
+            "console": { "source": "config", "masked": "3613...7ee8" },
+            "openapi": { "source": "config", "access_key_id": "LTAI...jkAo", "access_key_secret": "ylMu...fy46" }
+        });
+        let s = interpret_auth_status(&v, false);
+        assert!(s.installed && s.authenticated && s.has_open_api);
+        assert_eq!(s.auth_hint.as_deref(), Some("console · 3613...7ee8"));
+    }
+
+    #[test]
+    fn auth_status_detects_legacy_and_top_level_openapi_keys() {
+        // Other CLI builds may spell the section `open_api`…
+        let v = json!({ "authenticated": true, "open_api": { "access_key_id": "x" } });
+        assert!(interpret_auth_status(&v, false).has_open_api);
+        // …or carry the AK at the top level.
+        let v = json!({ "authenticated": true, "access_key_id": "x" });
+        assert!(interpret_auth_status(&v, false).has_open_api);
+    }
+
+    #[test]
+    fn auth_status_falls_back_to_config_file_read() {
+        // Status JSON carries no OpenAPI info at all — the config-file read is
+        // the only signal.
+        let v = json!({ "authenticated": true });
+        assert!(interpret_auth_status(&v, true).has_open_api);
+        assert!(!interpret_auth_status(&v, false).has_open_api);
+    }
+
+    #[test]
+    fn auth_status_null_openapi_means_not_configured() {
+        let v = json!({ "authenticated": true, "openapi": null });
+        assert!(!interpret_auth_status(&v, false).has_open_api);
+    }
+
+    #[test]
+    fn auth_status_hint_prefers_console_then_api_key() {
+        let v = json!({ "api_key": { "masked": "sk-s...9WXM" } });
+        assert_eq!(interpret_auth_status(&v, false).auth_hint.as_deref(), Some("api key · sk-s...9WXM"));
+        let v = json!({});
+        assert!(interpret_auth_status(&v, false).auth_hint.is_none());
     }
 
     #[test]

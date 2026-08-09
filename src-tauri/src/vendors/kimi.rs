@@ -9,9 +9,17 @@
 //! fixed-point micro-cents), and the membership tier (`user.membership.level`
 //! as a LEVEL_* enum). Numbers arrive as decimal strings.
 //!
-//! Read-only by design: the CLI owns the (single-use) refresh token and renews
-//! the login itself, so an expired token is surfaced as a re-login hint rather
-//! than refreshed here.
+//! The access token is very short-lived (`expires_in` 900s) and the CLI only
+//! renews it while it runs, so a stored token dies within 15 minutes of the
+//! CLI closing. To keep the login alive past that, an expired-by-clock token
+//! is refreshed in place (`refresh()`) using the stored refresh token and the
+//! CLI's own public OAuth client — the rotated tokens are written back to the
+//! same file the CLI reads. This is race-safe by the CLI's own design: its
+//! `ensureFresh()` re-reads the credentials file before AND after its refresh
+//! lock and uses the on-disk token when it changed, so it picks up our rotated
+//! tokens instead of refreshing with a stale copy (on Windows it takes no lock
+//! at all). The refresh token is single-use, so a persistence failure is a
+//! hard error rather than dropping the only-valid token — mirroring claude.rs.
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -20,6 +28,12 @@ use std::time::Duration;
 use super::{KeyVal, VendorStatus};
 
 const ENDPOINT: &str = "https://api.kimi.com/coding/v1/usages";
+/// OAuth host the CLI's device/refresh flow talks to. Overridable via the same
+/// env vars the CLI honors (`KIMI_CODE_OAUTH_HOST`, then `KIMI_OAUTH_HOST`).
+const DEFAULT_OAUTH_HOST: &str = "https://auth.kimi.com";
+/// The Kimi Code CLI's public OAuth client id (device flow; no secret), used
+/// here only with the user's own stored credentials, at their request.
+const CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
 /// Treat the access token as expired this many seconds before its stated
 /// `expires_at`, so an about-to-die token isn't used for a fetch that would
 /// 401 mid-flight anyway.
@@ -43,8 +57,9 @@ pub async fn fetch(now: DateTime<Utc>) -> VendorStatus {
         return VendorStatus::not_configured();
     };
 
-    // Dead by the token's own clock → don't bother the network. The owning CLI
-    // refreshes the login itself (it holds the refresh flow); we just report it.
+    // Dead by the token's own clock → don't bother the network. `collect()`
+    // auto-refreshes an expired login before calling this, so reaching this
+    // branch means the refresh failed (or wasn't possible) — report it.
     let expired = creds
         .get("expires_at")
         .and_then(value_as_i64)
@@ -108,7 +123,7 @@ fn login_expired(msg: impl Into<String>) -> VendorStatus {
 
 /// The raw credentials JSON the Kimi Code CLI stored.
 fn read_credentials() -> Option<String> {
-    std::fs::read_to_string(credentials_dir()?.join("credentials").join("kimi-code.json")).ok()
+    std::fs::read_to_string(credentials_path()?).ok()
 }
 
 /// `$KIMI_CODE_HOME` when set, else `~/.kimi-code`.
@@ -120,6 +135,204 @@ fn credentials_dir() -> Option<std::path::PathBuf> {
         }
     }
     dirs::home_dir().map(|h| h.join(".kimi-code"))
+}
+
+/// The credentials file the CLI reads and writes.
+fn credentials_path() -> Option<std::path::PathBuf> {
+    Some(credentials_dir()?.join("credentials").join("kimi-code.json"))
+}
+
+/// Local, network-free view of the stored login: whether an access token is
+/// present, whether it's past its stated expiry (with skew), and whether a
+/// refresh token is available to renew it. Lets `collect()` auto-refresh a
+/// dead-by-clock login up front instead of surfacing a false "login expired"
+/// 15 minutes after the CLI last ran. Mirrors claude.rs's `TokenStatus`.
+pub struct TokenStatus {
+    pub present: bool,
+    pub expired: bool,
+    pub has_refresh: bool,
+}
+
+pub fn token_status(now: DateTime<Utc>) -> TokenStatus {
+    read_credentials()
+        .map(|raw| parse_token_status(&raw, now))
+        .unwrap_or(TokenStatus { present: false, expired: false, has_refresh: false })
+}
+
+/// Pure half of `token_status`, split out so it's unit-testable without
+/// touching the real credentials file.
+fn parse_token_status(raw: &str, now: DateTime<Utc>) -> TokenStatus {
+    let Ok(v) = serde_json::from_str::<Value>(raw.trim()) else {
+        return TokenStatus { present: false, expired: false, has_refresh: false };
+    };
+    let nonempty = |key: &str| {
+        v.get(key)
+            .and_then(|t| t.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    };
+    // An empty access_token is the CLI's "revoked tombstone" — present:false,
+    // so no refresh is attempted and the UI shows the sign-in state.
+    let present = nonempty("access_token");
+    let has_refresh = nonempty("refresh_token");
+    // A missing/unparseable expires_at counts as not-expired: don't force a
+    // needless refresh on a token that may still be valid — the live fetch's
+    // 401 remains the backstop.
+    let expired = v
+        .get("expires_at")
+        .and_then(value_as_i64)
+        .map(|exp| now.timestamp() >= exp - EXPIRY_SKEW_SECS)
+        .unwrap_or(false);
+    TokenStatus { present, expired: present && expired, has_refresh }
+}
+
+/// The OAuth token endpoint for the refresh grant. Env overrides match the
+/// CLI's own (`KIMI_CODE_OAUTH_HOST` wins over `KIMI_OAUTH_HOST`).
+fn token_endpoint() -> String {
+    let host = std::env::var("KIMI_CODE_OAUTH_HOST")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("KIMI_OAUTH_HOST").ok().filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_OAUTH_HOST.to_string());
+    token_endpoint_for(&host)
+}
+
+/// Pure join of host + token path, tolerating a trailing slash on the host
+/// (the CLI does the same `replace(/\/$/, "")` normalization).
+fn token_endpoint_for(host: &str) -> String {
+    format!("{}/api/oauth/token", host.trim().trim_end_matches('/'))
+}
+
+/// Refresh an expired Kimi Code access token using the stored refresh token,
+/// then write the rotated credentials back to the same file the CLI reads.
+///
+/// The refresh token is SINGLE-USE: the server invalidates the old one and
+/// always returns a new one. If we obtain new tokens but fail to persist them,
+/// the user is locked out of Kimi Code — so persistence failures are hard
+/// errors (mirrors claude.rs's `refresh`).
+pub async fn refresh(now: DateTime<Utc>) -> Result<(), String> {
+    let raw = read_credentials().ok_or("No Kimi Code login found to refresh.")?;
+    let creds: Value = serde_json::from_str(raw.trim())
+        .map_err(|e| format!("stored credentials unreadable: {e}"))?;
+    let refresh_token = creds
+        .get("refresh_token")
+        .and_then(|t| t.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("No refresh token stored — open Kimi Code or run `kimi login` to sign in again.")?
+        .to_string();
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("client init: {e}"))?;
+
+    // Form-encoded, exactly the CLI's own refresh request.
+    let resp = client
+        .post(token_endpoint())
+        .form(&[
+            ("client_id", CLIENT_ID),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("request error: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        // 400 invalid_grant / 401 → the refresh token itself is dead (already
+        // rotated by a racing refresh, revoked, or fully expired). Only a real
+        // login can fix it.
+        if status.as_u16() == 400 || status.as_u16() == 401 {
+            return Err(
+                "Kimi Code refresh token expired — open Kimi Code or run `kimi login` to sign in again."
+                    .into(),
+            );
+        }
+        return Err(format!("token endpoint returned HTTP {}", status.as_u16()));
+    }
+
+    let tok: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("invalid token response: {e}"))?;
+    let access = tok
+        .get("access_token")
+        .and_then(|t| t.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("token response had no access_token")?
+        .to_string();
+    // Replace the refresh token (single-use rotation). If the server omitted a
+    // new one, keep the prior value rather than blanking it.
+    let new_refresh = tok
+        .get("refresh_token")
+        .and_then(|t| t.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let expires_in = tok.get("expires_in").and_then(value_as_i64).unwrap_or(900);
+    let serialized = build_refreshed_credentials(
+        &raw,
+        now,
+        &access,
+        new_refresh.as_deref(),
+        expires_in,
+        tok.get("scope").and_then(|s| s.as_str()),
+        tok.get("token_type").and_then(|s| s.as_str()),
+    )?;
+    write_credentials_file(&serialized)
+}
+
+/// Pure builder for the refreshed credentials JSON. Merges the new tokens into
+/// the prior file (preserving every field the CLI wrote) so the on-disk shape
+/// stays exactly what the CLI expects. Split from the network/file I/O so the
+/// merge and the expiry clamp are unit-testable.
+fn build_refreshed_credentials(
+    existing: &str,
+    now: DateTime<Utc>,
+    access: &str,
+    new_refresh: Option<&str>,
+    expires_in: i64,
+    scope: Option<&str>,
+    token_type: Option<&str>,
+) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(existing.trim())
+        .map_err(|e| format!("stored credentials unreadable: {e}"))?;
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let obj = root.as_object_mut().expect("root coerced to object");
+
+    obj.insert("access_token".into(), Value::String(access.to_string()));
+    if let Some(r) = new_refresh {
+        obj.insert("refresh_token".into(), Value::String(r.to_string()));
+    }
+    // expires_in is untrusted JSON; clamp it and build the deadline without
+    // panicking — `panic = "abort"` would take the whole app down on overflow.
+    // Mirrors the Claude merge: cap to a day, floor at 5 min, and fall back to
+    // the CLI's usual 15 min if the arithmetic ever can't be represented.
+    let clamped = expires_in.clamp(300, 86_400);
+    let expires_at = chrono::Duration::try_seconds(clamped)
+        .and_then(|d| now.checked_add_signed(d))
+        .unwrap_or_else(|| now + chrono::Duration::seconds(900))
+        .timestamp();
+    obj.insert("expires_at".into(), Value::Number(expires_at.into()));
+    obj.insert("expires_in".into(), Value::Number(clamped.into()));
+    if let Some(scope) = scope.filter(|s| !s.is_empty()) {
+        obj.insert("scope".into(), Value::String(scope.to_string()));
+    }
+    if let Some(token_type) = token_type.filter(|s| !s.is_empty()) {
+        obj.insert("token_type".into(), Value::String(token_type.to_string()));
+    }
+
+    serde_json::to_string(&root).map_err(|e| format!("serialize: {e}"))
+}
+
+/// Persist refreshed credentials to the file the CLI reads.
+fn write_credentials_file(json: &str) -> Result<(), String> {
+    let path = credentials_path().ok_or("no home directory for Kimi Code credentials")?;
+    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Whether the `kimi` CLI is somewhere on PATH (drives detection when no login
@@ -597,6 +810,124 @@ mod tests {
         assert_eq!(countdown(&at(3 * 24 * 60), now()).as_deref(), Some("3d 0h"));
         assert!(countdown(&at(-1), now()).is_none());
         assert!(countdown("not a date", now()).is_none());
+    }
+
+    // ── token status (auto-refresh pre-check) ──
+
+    #[test]
+    fn token_status_reads_present_expiry_and_refresh() {
+        let future = now().timestamp() + 900;
+        let raw = format!(
+            r#"{{"access_token":"a","refresh_token":"r","expires_at":{future},"scope":"kimi-code","token_type":"Bearer","expires_in":900}}"#
+        );
+        let s = parse_token_status(&raw, now());
+        assert!(s.present && s.has_refresh && !s.expired);
+
+        let past = now().timestamp() - 10;
+        let raw = format!(r#"{{"access_token":"a","refresh_token":"r","expires_at":{past}}}"#);
+        let s = parse_token_status(&raw, now());
+        assert!(s.present && s.has_refresh && s.expired);
+
+        // Token present but no refresh token → can't auto-renew.
+        let raw = format!(r#"{{"access_token":"a","expires_at":{past}}}"#);
+        let s = parse_token_status(&raw, now());
+        assert!(s.present && !s.has_refresh && s.expired);
+    }
+
+    #[test]
+    fn token_status_within_skew_counts_as_expired() {
+        // 30s left is inside the 60s skew — refresh now rather than 401 mid-fetch.
+        let soon = now().timestamp() + 30;
+        let raw = format!(r#"{{"access_token":"a","refresh_token":"r","expires_at":{soon}}}"#);
+        assert!(parse_token_status(&raw, now()).expired);
+    }
+
+    #[test]
+    fn token_status_revoked_tombstone_is_not_present() {
+        // The CLI writes empty tokens as its "revoked" tombstone — no refresh
+        // attempt, the UI shows the sign-in state.
+        let raw = r#"{"access_token":"","refresh_token":"","expires_at":0,"scope":"kimi-code","token_type":"Bearer","expires_in":0}"#;
+        let s = parse_token_status(raw, now());
+        assert!(!s.present && !s.has_refresh && !s.expired);
+    }
+
+    #[test]
+    fn token_status_missing_expiry_counts_as_valid() {
+        // Don't force a needless refresh on a token that may still be valid —
+        // the live fetch's 401 is the backstop.
+        let s = parse_token_status(r#"{"access_token":"a","refresh_token":"r"}"#, now());
+        assert!(s.present && s.has_refresh && !s.expired);
+    }
+
+    #[test]
+    fn token_status_garbage_json_is_absent() {
+        let s = parse_token_status("not json", now());
+        assert!(!s.present && !s.has_refresh && !s.expired);
+    }
+
+    // ── refreshed-credentials merge ──
+
+    #[test]
+    fn refreshed_credentials_merge_and_rotate() {
+        let existing = r#"{"access_token":"old","refresh_token":"oldR","expires_at":1,"scope":"kimi-code","token_type":"Bearer","expires_in":900,"extra_keep":true}"#;
+        let out = build_refreshed_credentials(
+            existing,
+            now(),
+            "newA",
+            Some("newR"),
+            900,
+            Some("kimi-code"),
+            Some("Bearer"),
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["access_token"], "newA");
+        assert_eq!(v["refresh_token"], "newR");
+        assert_eq!(v["expires_at"], now().timestamp() + 900);
+        assert_eq!(v["expires_in"], 900);
+        // Unknown fields the CLI wrote are preserved.
+        assert_eq!(v["extra_keep"], true);
+    }
+
+    #[test]
+    fn refreshed_credentials_keep_prior_refresh_when_server_omits_one() {
+        let existing = r#"{"access_token":"old","refresh_token":"keepR","expires_at":1}"#;
+        let out =
+            build_refreshed_credentials(existing, now(), "newA", None, 900, None, None).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["refresh_token"], "keepR");
+        // Scope/token_type absent from the response keep their stored values…
+        let existing = r#"{"access_token":"old","refresh_token":"r","scope":"kimi-code","token_type":"Bearer"}"#;
+        let out = build_refreshed_credentials(existing, now(), "a", None, 900, None, None).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["scope"], "kimi-code");
+        assert_eq!(v["token_type"], "Bearer");
+    }
+
+    #[test]
+    fn refreshed_credentials_clamp_hostile_expires_in() {
+        // Untrusted JSON: a huge or negative expires_in must not overflow the
+        // timestamp math (`panic = "abort"` takes the whole app down).
+        let out = build_refreshed_credentials("{}", now(), "a", None, i64::MAX, None, None).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["expires_at"], now().timestamp() + 86_400);
+        let out = build_refreshed_credentials("{}", now(), "a", None, -5, None, None).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["expires_at"], now().timestamp() + 300);
+    }
+
+    // ── token endpoint ──
+
+    #[test]
+    fn token_endpoint_normalizes_trailing_slash() {
+        assert_eq!(
+            token_endpoint_for("https://auth.kimi.com"),
+            "https://auth.kimi.com/api/oauth/token"
+        );
+        assert_eq!(
+            token_endpoint_for("https://auth.kimi.com/"),
+            "https://auth.kimi.com/api/oauth/token"
+        );
     }
 }
 

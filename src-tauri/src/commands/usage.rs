@@ -61,6 +61,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         alibaba_cached,
         alibaba_prev,
         alibaba_due,
+        kimi_refresh_due,
     ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -88,6 +89,11 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // last good reading (bounded by ALIBABA_CACHE_MAX_SECS) in between.
         let alibaba_due = guard.alibaba_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::ALIBABA_MIN_SECS
+        });
+        // Same throttle as the Claude auto-refresh for the Kimi token endpoint:
+        // a dead refresh token isn't retried on every collect tick.
+        let kimi_refresh_due = guard.kimi_refresh_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::KIMI_REFRESH_MIN_SECS
         });
         (
             guard.settings.plan.clone(),
@@ -132,6 +138,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 .and_then(|s| s.vendor.as_ref())
                 .map(|v| v.alibaba.clone()),
             alibaba_due,
+            kimi_refresh_due,
         )
     };
 
@@ -271,6 +278,20 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // GLM + Anthropic are quick HTTP calls — always fetch them, concurrent with
     // the Bailian shell-out when one is in flight. Kimi is the same shape (one
     // quick GET against the CLI's stored OAuth login).
+    // Kimi access tokens live only ~15 minutes and the CLI renews them only
+    // while it runs, so a stored token is dead-by-clock within minutes of the
+    // CLI closing. Renew it in place before the fetch below re-reads the
+    // shared credentials file (the CLI re-reads that file before/after its own
+    // refresh, so our rotation is race-safe with a running CLI). On failure
+    // the fetch surfaces the re-login state as before.
+    let mut kimi_refresh_attempted = false;
+    let kimi_ts = kimi::token_status(now);
+    if kimi_ts.present && kimi_ts.expired && kimi_ts.has_refresh && kimi_refresh_due {
+        kimi_refresh_attempted = true;
+        if let Err(e) = kimi::refresh(now).await {
+            tracing::warn!("kimi token auto-refresh failed: {e}");
+        }
+    }
     let (glm_status, anthropic_status, kimi_status) = tokio::join!(
         fetch_glm(zai_key, &glm_endpoint, now),
         fetch_anthropic(anthropic_key),
@@ -402,6 +423,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if alibaba_attempted {
             guard.alibaba_attempted_at = Some(now);
+        }
+        if kimi_refresh_attempted {
+            guard.kimi_refresh_attempted_at = Some(now);
         }
     }
 
