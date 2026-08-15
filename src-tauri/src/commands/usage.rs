@@ -62,6 +62,8 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         alibaba_prev,
         alibaba_due,
         kimi_refresh_due,
+        glm_week_cached,
+        glm_week_due,
     ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -94,6 +96,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // a dead refresh token isn't retried on every collect tick.
         let kimi_refresh_due = guard.kimi_refresh_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::KIMI_REFRESH_MIN_SECS
+        });
+        // The z.ai 7-day usage chart pulls a week of hourly buckets — poll it
+        // gently (GLM_WEEK_MIN_SECS) and serve the cached chart in between,
+        // bounded by GLM_WEEK_CACHE_MAX_SECS like the Copilot/Bailian caches.
+        let glm_week_due = guard.glm_week_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::GLM_WEEK_MIN_SECS
         });
         (
             guard.settings.plan.clone(),
@@ -139,6 +147,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 .map(|v| v.alibaba.clone()),
             alibaba_due,
             kimi_refresh_due,
+            guard.glm_week_last_good.clone().filter(|_| {
+                guard.glm_week_last_good_at.is_some_and(|t| {
+                    (now - t).num_seconds() < crate::state::GLM_WEEK_CACHE_MAX_SECS
+                })
+            }),
+            glm_week_due,
         )
     };
 
@@ -292,11 +306,38 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             tracing::warn!("kimi token auto-refresh failed: {e}");
         }
     }
-    let (glm_status, anthropic_status, kimi_status) = tokio::join!(
+    // The 7-day chart shares `zai_key`/`glm_endpoint` with the quota fetch but
+    // is separately throttled (its payload is week-sized); capture presence
+    // before the join moves the key, and hand the week fetch its own clone.
+    let zai_key_present = zai_key.is_some();
+    let zai_key_week = zai_key.clone();
+    let (glm_status, glm_week_result, anthropic_status, kimi_status) = tokio::join!(
         fetch_glm(zai_key, &glm_endpoint, now),
+        fetch_glm_week(zai_key_week.as_ref(), &glm_endpoint, now, glm_week_due),
         fetch_anthropic(anthropic_key),
         kimi::fetch(now),
     );
+    // z.ai 7-day chart: serve the fresh reading, else the age-bounded cache. A
+    // failure with nothing cached simply hides the section — the quota card
+    // above already surfaces z.ai errors — and leaves the throttle unstamped so
+    // the next collect retries (mirroring the Bailian/Copilot policy). A key
+    // that's gone entirely also drops the cache so a stale chart can't outlive
+    // a sign-out.
+    let mut glm_week_fresh_good: Option<glm::GlmWeek> = None;
+    let mut glm_week_attempted = false;
+    let glm_week_clear_cache = !zai_key_present;
+    let glm_week: Option<glm::GlmWeek> = match glm_week_result {
+        Some(Ok(week)) => {
+            glm_week_attempted = true;
+            glm_week_fresh_good = Some(week.clone());
+            Some(week)
+        }
+        Some(Err(_)) => {
+            glm_week_attempted = glm_week_cached.is_some();
+            glm_week_cached
+        }
+        None => glm_week_cached,
+    };
     // Keep the last good Bailian reading through a transient `bl` failure so one
     // bad tick doesn't flip real quota data into a "couldn't read" card. Only a
     // failure with nothing cached (first fetch, or a prolonged outage past
@@ -385,6 +426,41 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         kimi: kimi_status,
     });
 
+    // z.ai activity rows for the Sessions tab: one per active hour from the
+    // monitor usage data — real server-side usage, including activity from
+    // other machines. They replace the scanner's token-less MCP summary row
+    // whenever live data exists (that row stays as the no-key fallback), then
+    // interleave with the log-derived rows by real recency via `at`.
+    if glm_week.as_ref().is_some_and(|w| !w.recent.is_empty()) {
+        snapshot.sessions.retain(|r| !(r.provider == "glm" && r.id == "glm"));
+    }
+    if let Some(week) = &glm_week {
+        for h in &week.recent {
+            snapshot.sessions.push(scanner::SessionRow {
+                // "08-15 14:00" — doubles as the meta line's `#id` and keeps
+                // React keys unique (one row per hour by construction).
+                id: h.at.with_timezone(&chrono::Local).format("%m-%d %H:00").to_string(),
+                project: "GLM / z.ai".to_string(),
+                model: h.model.clone(),
+                tokens: h.tokens,
+                cost: 0.0,
+                when: scanner::humanize_when(h.at, now),
+                provider: "glm".to_string(),
+                tokens_text: scanner::fmt_tokens(h.tokens as f64),
+                // z.ai meters calls, not dollars — same "N premium" treatment
+                // Copilot gets for its non-dollar metric.
+                cost_text: if h.calls > 0 {
+                    format!("{} calls", h.calls)
+                } else {
+                    "—".to_string()
+                },
+                at: Some(h.at),
+            });
+        }
+        snapshot.sessions.sort_by(|a, b| b.at.cmp(&a.at));
+    }
+    snapshot.glm_week = glm_week;
+
     {
         let state = app.state::<Mutex<AppState>>();
         let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -427,6 +503,20 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         if kimi_refresh_attempted {
             guard.kimi_refresh_attempted_at = Some(now);
         }
+        // Cache a fresh z.ai 7-day reading; drop it (and reset the throttle)
+        // when the key is gone so a stale chart can't outlive a sign-out.
+        if let Some(good) = glm_week_fresh_good {
+            guard.glm_week_last_good = Some(good);
+            guard.glm_week_last_good_at = Some(now);
+        }
+        if glm_week_clear_cache {
+            guard.glm_week_last_good = None;
+            guard.glm_week_last_good_at = None;
+            guard.glm_week_attempted_at = None;
+        }
+        if glm_week_attempted {
+            guard.glm_week_attempted_at = Some(now);
+        }
     }
 
     Ok(snapshot)
@@ -444,6 +534,26 @@ async fn fetch_glm(
             Err(e) => VendorStatus::failed(format!("key decrypt: {e}")),
         },
     }
+}
+
+/// Fetch the z.ai 7-day usage chart. `None` means "nothing to do right now" —
+/// throttled, or no key stored (the section then doesn't render). `Some(Err(_))`
+/// is a real fetch failure, covered by the cached reading in `collect()`.
+async fn fetch_glm_week(
+    key: Option<&EncryptedSecret>,
+    endpoint: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    due: bool,
+) -> Option<Result<glm::GlmWeek, String>> {
+    if !due {
+        return None;
+    }
+    let secret = key?;
+    let api_key = match encryption::decrypt(secret) {
+        Ok(k) => k,
+        Err(e) => return Some(Err(format!("key decrypt: {e}"))),
+    };
+    Some(glm::fetch_week(&api_key, endpoint, now).await)
 }
 
 async fn fetch_anthropic(key: Option<EncryptedSecret>) -> VendorStatus {
@@ -871,6 +981,15 @@ pub fn set_api_key(
         "anthropic" => update_settings(&state, |s| s.anthropic_key = Some(secret))?,
         other => return Err(format!("unknown provider: {other}")),
     };
+    if matches!(provider.as_str(), "glm" | "zai") {
+        // The 7-day chart belongs to the account behind the key — reset its
+        // cache + throttle so the next collect refetches instead of serving
+        // the previous account's chart.
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.glm_week_last_good = None;
+        guard.glm_week_last_good_at = None;
+        guard.glm_week_attempted_at = None;
+    }
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())
 }
@@ -887,6 +1006,15 @@ pub fn clear_api_key(
         "anthropic" => update_settings(&state, |s| s.anthropic_key = None)?,
         other => return Err(format!("unknown provider: {other}")),
     };
+    if matches!(provider.as_str(), "glm" | "zai") {
+        // Drop the 7-day chart with the key — collect() would clear the cache
+        // anyway, but resetting the throttle here makes the very next collect
+        // after a re-add fetch immediately.
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.glm_week_last_good = None;
+        guard.glm_week_last_good_at = None;
+        guard.glm_week_attempted_at = None;
+    }
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())
 }

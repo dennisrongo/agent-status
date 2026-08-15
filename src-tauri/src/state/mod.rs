@@ -126,6 +126,18 @@ pub struct AppState {
     /// behind; we renew it in place, but a dead refresh token isn't retried
     /// against the token endpoint more than once per `KIMI_REFRESH_MIN_SECS`.
     pub kimi_refresh_attempted_at: Option<DateTime<Utc>>,
+    /// Last *successful* z.ai 7-day model-usage reading. The payload is large
+    /// (hourly buckets for a week) and the totals move slowly, so it's fetched
+    /// at most once per `GLM_WEEK_MIN_SECS` and the cached reading is served in
+    /// between, bounded by `GLM_WEEK_CACHE_MAX_SECS`.
+    pub glm_week_last_good: Option<crate::vendors::glm::GlmWeek>,
+    /// When `glm_week_last_good` was captured.
+    pub glm_week_last_good_at: Option<DateTime<Utc>>,
+    /// When the z.ai model-usage endpoint was last *attempted*. Throttles it
+    /// (see `GLM_WEEK_MIN_SECS`) so the background loop, window opens, and tray
+    /// hovers don't repeatedly pull the week-sized payload. Cleared when the
+    /// z.ai key changes so a new key refetches immediately.
+    pub glm_week_attempted_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -176,6 +188,15 @@ pub const COPILOT_CACHE_MAX_SECS: i64 = 1800;
 /// since reset) as current.
 pub const ALIBABA_CACHE_MAX_SECS: i64 = 1800;
 
+/// Minimum seconds between z.ai 7-day model-usage fetches. The payload is a
+/// week of hourly buckets and the totals move slowly, so it's polled gently
+/// (matching the Copilot/Bailian philosophy of throttling slow-moving data).
+pub const GLM_WEEK_MIN_SECS: i64 = 900;
+
+/// Longest a cached z.ai 7-day reading is served while fetches keep failing —
+/// past this the section hides rather than showing an increasingly stale chart.
+pub const GLM_WEEK_CACHE_MAX_SECS: i64 = 7200;
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
@@ -193,6 +214,9 @@ impl AppState {
             alibaba_last_good_at: None,
             alibaba_attempted_at: None,
             kimi_refresh_attempted_at: None,
+            glm_week_last_good: None,
+            glm_week_last_good_at: None,
+            glm_week_attempted_at: None,
         }
     }
 }

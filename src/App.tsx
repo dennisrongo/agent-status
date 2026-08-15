@@ -12,7 +12,7 @@ import { useAutoRotate } from "./hooks/useAutoRotate";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { generatedLabel, tileLabel } from "./format";
-import type { Glm, PlanKey, VendorKeyVal, VendorStatus } from "./types";
+import type { Glm, GlmWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
 
@@ -220,6 +220,7 @@ export default function App() {
   }
 
   const { meta, limits, week, models, sessions, providers, glm, kpi } = snapshot;
+  const glmWeek = snapshot.glmWeek;
 
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
@@ -410,6 +411,7 @@ export default function App() {
               <GlmOverview
                 vendor={snapshot.vendor?.glm}
                 glm={glm}
+                glmWeek={glmWeek}
                 minimal={minimal}
                 onConnect={() => setTab("settings")}
               />
@@ -456,7 +458,9 @@ export default function App() {
             </div>
             <div className="sess">
               {sessions.map((s) => {
-                const isGlm = s.provider === "glm";
+                // The scanner's key-less fallback row aggregates MCP-log
+                // sessions; real (per-hour) rows carry their own bucket id.
+                const isGlmSummary = s.provider === "glm" && s.id === "glm";
                 return (
                   <div className="sess-row" key={`${s.provider}-${s.id}`}>
                     <div className="s-main">
@@ -466,7 +470,7 @@ export default function App() {
                       </div>
                       <div className="s-meta">
                         {s.model && <span className={`badge ${s.model}`}>{s.model}</span>}
-                        {isGlm ? (
+                        {isGlmSummary ? (
                           <span>{glm.sessions} session{glm.sessions === 1 ? "" : "s"}</span>
                         ) : (
                           <span>#{s.id}</span>
@@ -674,11 +678,13 @@ function QuotaMeters({ windows }: { windows: VendorKeyVal[] }) {
 function GlmOverview({
   vendor,
   glm,
+  glmWeek,
   minimal,
   onConnect,
 }: {
   vendor: VendorStatus | undefined;
   glm: Glm;
+  glmWeek: GlmWeek | undefined;
   minimal: boolean;
   onConnect: () => void;
 }) {
@@ -694,6 +700,31 @@ function GlmOverview({
       {live && vendor ? (
         <>
           <QuotaMeters windows={windows} />
+          {!minimal && glmWeek && glmWeek.days.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>Last 7 days</h2>
+                <span className="meta">
+                  {glmWeek.totalTokens} · {glmWeek.totalCalls} calls
+                </span>
+              </div>
+              <WeekChart week={glmWeek.days} />
+              {glmWeek.models.length > 0 && (
+                <div className="budget">
+                  {glmWeek.models.map((m, i) => (
+                    <div
+                      className="budget-foot"
+                      key={`${m.label}-${i}`}
+                      style={i === 0 ? { marginTop: 0 } : undefined}
+                    >
+                      <span className="used">{m.label}</span>
+                      <span className="rem">{m.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
           {!minimal && toolRows.length > 0 && (
             <>
               <div className="sec-head">

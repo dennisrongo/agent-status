@@ -121,6 +121,16 @@ export interface VendorReport {
   kimi: VendorStatus;
 }
 
+/** z.ai "Last 7 days" view, fetched from the monitor `model-usage` endpoint.
+ *  `days` reuses the Claude week-chart shape — `costFmt` carries the day's call
+ *  count ("1.2K calls") because z.ai reports no cost. */
+export interface GlmWeek {
+  days: WeekDay[];
+  models: VendorKeyVal[];
+  totalTokens: string;
+  totalCalls: string;
+}
+
 export interface Detection {
   claude: boolean;
   glm: boolean;
@@ -145,6 +155,8 @@ export interface UsageSnapshot {
   providers: Provider[];
   glm: Glm;
   vendor?: VendorReport;
+  /** Present once a z.ai key is set and the 7-day usage fetch has succeeded. */
+  glmWeek?: GlmWeek;
   detection?: Detection;
 }
 

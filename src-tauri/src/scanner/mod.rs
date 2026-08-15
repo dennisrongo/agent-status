@@ -43,6 +43,11 @@ pub struct UsageSnapshot {
     /// Live vendor-side usage, filled in by the command layer after the scan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor: Option<crate::vendors::VendorReport>,
+    /// z.ai 7-day usage chart (tokens/day + per-model breakdown), filled in by
+    /// the command layer from the monitor `model-usage` endpoint. Distinct from
+    /// `vendor.glm`, which carries the quota windows only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glm_week: Option<crate::vendors::glm::GlmWeek>,
     /// Which providers are present locally, filled in by the command layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detection: Option<crate::vendors::Detection>,
@@ -149,6 +154,11 @@ pub struct SessionRow {
     /// standard-tier pricing), premium requests for Copilot, `"—"` where the
     /// provider bills on a flat-rate plan and a dollar figure would be a lie.
     pub cost_text: String,
+    /// The ordering instant behind `when` — never serialized (the UI reads the
+    /// humanized string), but carried so the command layer can interleave
+    /// vendor-sourced rows (z.ai monitor activity) by recency.
+    #[serde(skip_serializing)]
+    pub at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,7 +206,8 @@ const EM_DASH: &str = "—";
 
 /// Most-recent session rows kept per provider. The Sessions list is scrollable,
 /// not paginated, so an unbounded history would render an unbounded DOM.
-const MAX_PROVIDER_ROWS: usize = 25;
+/// Shared with the z.ai monitor rows the command layer appends.
+pub(crate) const MAX_PROVIDER_ROWS: usize = 25;
 
 /// Roll-up of one provider's session rows for the Providers tab.
 struct ProviderTotals {
@@ -265,7 +276,9 @@ fn plan_label(plan: &str) -> &'static str {
 
 // ---------- Formatting helpers ----------
 
-fn fmt_tokens(n: f64) -> String {
+/// Compact token figure ("1.5M"), shared by session rows and the command
+/// layer's z.ai monitor rows so both providers render on the same scale.
+pub(crate) fn fmt_tokens(n: f64) -> String {
     if n >= 1e9 {
         format!("{:.2}B", n / 1e9)
     } else if n >= 1e6 {
@@ -299,7 +312,9 @@ fn countdown(reset: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     }
 }
 
-fn humanize_when(ts: DateTime<Utc>, now: DateTime<Utc>) -> String {
+/// Relative-time label, shared by session rows and the command layer's
+/// z.ai monitor rows.
+pub(crate) fn humanize_when(ts: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let delta = now - ts;
     let secs = delta.num_seconds().max(0);
     let days = delta.num_days();
@@ -667,6 +682,7 @@ fn build_snapshot(
                 tokens: s.tokens,
                 cost: (s.cost * 100.0).round() / 100.0,
                 when: String::new(),
+                at: None,
                 provider: "claude".to_string(),
                 tokens_text: fmt_tokens(s.tokens as f64),
                 cost_text: fmt_cost(s.cost),
@@ -687,6 +703,7 @@ fn build_snapshot(
                 tokens: 0,
                 cost: 0.0,
                 when: String::new(),
+                at: None,
                 provider: "glm".to_string(),
                 tokens_text: EM_DASH.to_string(),
                 cost_text: EM_DASH.to_string(),
@@ -702,12 +719,15 @@ fn build_snapshot(
     rows.extend(kimi);
     rows.extend(copilot);
 
-    // Newest first, then assign humanized `when` from the ordering instant.
+    // Newest first, then assign humanized `when` from the ordering instant —
+    // and carry the instant itself, so vendor-sourced rows appended by the
+    // command layer (z.ai monitor activity) can interleave by real recency.
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     let session_rows: Vec<SessionRow> = rows
         .into_iter()
         .map(|(dt, mut row)| {
             row.when = humanize_when(dt, now);
+            row.at = Some(dt);
             row
         })
         .collect();
@@ -777,11 +797,16 @@ fn build_snapshot(
         providers,
         glm,
         vendor: None,
+        // z.ai 7-day usage chart — filled in by the command layer after a live
+        // fetch, like `vendor`/`detection` (the scanner sees no z.ai data).
+        glm_week: None,
         detection: None,
     }
 }
 
-fn weekday_abbr(num_from_monday: u32) -> String {
+/// Three-letter weekday label, shared with the z.ai 7-day usage chart
+/// (`vendors::glm::GlmWeek` reuses the same `WeekDay` row shape).
+pub(crate) fn weekday_abbr(num_from_monday: u32) -> String {
     match num_from_monday {
         0 => "Mon",
         1 => "Tue",
@@ -862,6 +887,7 @@ fn scan_kimi(root: &Path) -> Vec<(DateTime<Utc>, SessionRow)> {
                 tokens,
                 cost: 0.0,
                 when: String::new(),
+                at: None,
                 provider: "kimi".to_string(),
                 tokens_text: if tokens > 0 {
                     fmt_tokens(tokens as f64)
@@ -1029,6 +1055,7 @@ fn scan_copilot(root: &Path) -> Vec<(DateTime<Utc>, SessionRow)> {
                 tokens: tokens.unwrap_or(0),
                 cost: 0.0,
                 when: String::new(),
+                at: None,
                 provider: "copilot".to_string(),
                 tokens_text: tokens.map(|t| fmt_tokens(t as f64)).unwrap_or_else(|| EM_DASH.to_string()),
                 // Copilot meters premium requests, not dollars.

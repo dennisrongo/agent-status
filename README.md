@@ -109,6 +109,8 @@ Each provider reports different things. Local data comes from parsing logs on di
 | --- | --- | --- |
 | Token / cost (local) | `~/.zai/*.log` — lifecycle only | ❌ shown as `—` |
 | 5h / weekly quota (with key) | z.ai monitor API (`/api/monitor/usage/quota/limit`) | ✅ real |
+| Monthly tool quota + breakdown (with key) | same endpoint, `TIME_LIMIT` entry | ✅ real |
+| Last 7 days chart + per-model tokens (with key) | z.ai monitor API (`/api/monitor/usage/model-usage`) | ✅ real |
 
 ### Anthropic (org-level, with admin key)
 
@@ -149,7 +151,7 @@ Each provider reports different things. Local data comes from parsing logs on di
 
 ### Sessions ("Recent activity")
 
-Rows come from every CLI that keeps a local session log — Claude, Kimi, and Copilot — interleaved by recency, plus a single summary row for GLM. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own. GLM is the same story — its local logs record only MCP server lifecycle, and a GLM-backed Claude Code session lands in Claude's logs.
+Rows come from every CLI that keeps a local session log — Claude, Kimi, and Copilot — interleaved by recency. **GLM contributes real per-hour rows** from the z.ai monitor API (`/api/monitor/usage/model-usage`) when an API key is set — one row per active hour with tokens, call count, and the dominant model, covering activity from any machine, not just this one. Without a key it falls back to a single summary row from the local MCP logs. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own.
 
 Anything a provider doesn't record locally shows `—` rather than a zero.
 
