@@ -30,23 +30,24 @@ export function generatedLabel(generatedMs: number, fallback: string): string {
 /**
  * Split a reset-countdown string into the "resets in" label and the time
  * part that follows it, so the time can be colored separately. Recognizes a
- * full "resets in 2h 15m" string (GLM/Alibaba), the bare "resets <date>"
- * form, or a bare duration like "2h 15m" (Claude). Anything else — used/total
- * counts ("1.2K / 10K"), placeholders ("—"), or state words ("ready") —
- * returns no label so the caller renders it plain and uncolored.
+ * full "resets in 2h 15m" string (GLM/Alibaba), a composite
+ * "<counts> · resets in 3d 0h" (GLM tool quota), the bare "resets <date>"
+ * form, or a bare duration like "2h 15m" (Claude). Composites keep their
+ * counts in the plain color — only the time part is highlighted. Anything
+ * else — used/total counts ("1.2K / 10K"), placeholders ("—"), or state
+ * words ("ready") — returns no label so the caller renders it plain and
+ * uncolored.
  */
 export function splitReset(value: string): { label: string; time: string } {
   const v = value.trim();
-  const rest = v.startsWith("resets in ")
-    ? v.slice("resets in ".length)
-    : v.startsWith("resets ")
-      ? v.slice("resets ".length)
-      : null;
+  // The marker either leads the string or follows the " · " that joins it to
+  // counts; the optional "in" absorbs the bare "resets <date>" form.
+  const m = v.match(/^(.*?· )?resets (?:in )?(.+)$/);
   // A bare duration (e.g. "2h 15m", "3d 0h", "45m") from the Claude path.
-  if (rest === null) {
+  if (!m) {
     return /^\d+[dhm]/.test(v)
       ? { label: "resets in", time: v }
       : { label: "", time: v };
   }
-  return { label: "resets in", time: rest };
+  return { label: `${m[1] ?? ""}resets in`, time: m[2] };
 }

@@ -75,6 +75,22 @@ describe("splitReset", () => {
     });
   });
 
+  it("splits the composite '<counts> · resets in <time>' form (GLM tool quota)", () => {
+    // The counts stay in the plain color as part of the label; only the
+    // countdown is the time part, so it renders highlighted like Anthropic's.
+    expect(splitReset("133 / 1,000 · resets in 10d 3h")).toEqual({
+      label: "133 / 1,000 · resets in",
+      time: "10d 3h",
+    });
+  });
+
+  it("splits a composite with a calendar date after the marker", () => {
+    expect(splitReset("1.1K of 5K left · resets 2026-07-01")).toEqual({
+      label: "1.1K of 5K left · resets in",
+      time: "2026-07-01",
+    });
+  });
+
   it("returns no label for placeholder/state values so they render plain", () => {
     expect(splitReset("—")).toEqual({ label: "", time: "—" });
     expect(splitReset("ready")).toEqual({ label: "", time: "ready" });
