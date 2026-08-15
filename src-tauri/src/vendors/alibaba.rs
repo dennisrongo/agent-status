@@ -233,7 +233,7 @@ pub fn login() -> Result<String, String> {
         .map_err(|e| format!("spawn: {e}"))?;
 
     if out.status.success() {
-        Ok("Authenticated with Alibaba Cloud. Usage will appear on the next refresh.".to_string())
+        Ok("Authenticated with Alibaba. Usage will appear on the next refresh.".to_string())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -261,7 +261,7 @@ pub fn logout() -> Result<String, String> {
         .map_err(|e| format!("spawn: {e}"))?;
 
     if out.status.success() {
-        Ok("Disconnected from Alibaba Cloud.".to_string())
+        Ok("Disconnected from Alibaba.".to_string())
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);

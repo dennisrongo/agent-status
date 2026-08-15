@@ -16,7 +16,7 @@ const WIDTH = 300;
  * Compact preview of one provider's usage, shown in its own borderless window
  * when the cursor hovers the tray icon. Listens for the same `usage-updated`
  * broadcast the main window uses, plus a `hover-provider` event that tells it
- * which provider (Claude, GLM, Copilot, Alibaba, or Kimi) to show. Fits its window to the rendered
+ * which provider (Anthropic, Z.ai, GitHub, Alibaba, or Moonshot) to show. Fits its window to the rendered
  * content so spacing is controlled by CSS rather than the OS tooltip.
  */
 export function HoverPopover() {
@@ -82,36 +82,36 @@ function HoverContent({
     return (
       <VendorMeters
         vendor={snapshot.vendor?.glm}
-        srcLabel="z.ai"
-        setupHint="Add a GLM API key in the app to see quota."
-        errorLead="Couldn’t reach z.ai"
+        srcLabel="Z.ai"
+        setupHint="Add a Z.ai API key in the app to see quota."
+        errorLead="Couldn’t reach Z.ai"
       />
     );
   if (provider === "copilot")
     return (
       <VendorMeters
         vendor={snapshot.vendor?.copilot}
-        srcLabel="Copilot"
-        setupHint="Connect GitHub Copilot in the app to see quota."
-        errorLead="Couldn't read Copilot usage"
+        srcLabel="GitHub"
+        setupHint="Connect GitHub in the app to see quota."
+        errorLead="Couldn't read GitHub usage"
       />
     );
   if (provider === "alibaba")
     return (
       <VendorMeters
         vendor={snapshot.vendor?.alibaba}
-        srcLabel="Bailian"
+        srcLabel="Alibaba"
         setupHint="Install the Bailian CLI (bl) to see usage."
-        errorLead="Couldn't read Bailian CLI"
+        errorLead="Couldn't read Alibaba usage"
       />
     );
   if (provider === "kimi")
     return (
       <VendorMeters
         vendor={snapshot.vendor?.kimi}
-        srcLabel="Kimi"
+        srcLabel="Moonshot"
         setupHint="Sign in to Kimi Code (kimi login) to see quota."
-        errorLead="Couldn't read Kimi usage"
+        errorLead="Couldn't read Moonshot usage"
       />
     );
   return <ClaudeContent snapshot={snapshot} />;
@@ -131,17 +131,17 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
     const expired = detection?.claudeExpired ?? false;
     return (
       <>
-        <Head src="Claude" />
+        <Head src="Anthropic" />
         <div className={`hp-status${expired ? " warn" : ""}`}>
           {expired
-            ? "Claude login expired — reconnect in the app."
-            : "Connect Claude in the app to see usage."}
+            ? "Anthropic login expired — reconnect in the app."
+            : "Connect Anthropic in the app to see usage."}
         </div>
       </>
     );
   }
 
-  const source = limits.live ? "live · Claude" : `${limits.planLabel} plan · est.`;
+  const source = limits.live ? "live · Anthropic" : `${limits.planLabel} plan · est.`;
   return (
     <>
       <Head src={source} />
@@ -159,7 +159,7 @@ function ClaudeContent({ snapshot }: { snapshot: UsageSnapshot }) {
         </div>
       ) : (
         <div className="hp-status">
-          {limits.pending ? "Reading live Claude usage…" : "No usage data yet."}
+          {limits.pending ? "Reading live Anthropic usage…" : "No usage data yet."}
         </div>
       )}
     </>

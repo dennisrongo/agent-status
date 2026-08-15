@@ -233,8 +233,8 @@ export default function App() {
   const claudeConnected = snapshot.detection
     ? snapshot.detection.claudeSignedIn && !claudeExpired
     : true;
-  // Claude's local-log totals row for the Providers tab.
-  const claudeProv = providers.find((p) => p.name.startsWith("Claude")) ?? providers[0];
+  // Anthropic's local-log totals row for the Providers tab.
+  const claudeProv = providers.find((p) => p.name === "Anthropic") ?? providers[0];
 
   return (
     <main className="widget">
@@ -329,7 +329,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Claude" : p === "glm" ? "GLM" : p === "copilot" ? "Copilot" : p === "alibaba" ? "Alibaba" : "Kimi"}
+                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : "Moonshot"}
                   </button>
                 ))}
               </div>
@@ -345,7 +345,7 @@ export default function App() {
                 <>
                   {limits.pending ? (
                     <div className="connect-card">
-                      <p className="connect-title">Reading live Claude usage…</p>
+                      <p className="connect-title">Reading live Anthropic usage…</p>
                       <p className="connect-sub">{limits.estimateNote}</p>
                     </div>
                   ) : (
@@ -489,12 +489,13 @@ export default function App() {
             <div className="note">
               <InfoIcon />
               <p>
-                Activity spans every provider that keeps a local session log. Claude and Kimi
-                record per-turn tokens (input, output and cache read/write); Claude cost is
-                estimated from standard-tier pricing, while Kimi bills a flat-rate plan.
-                Copilot totals are written when a session ends, so a running one shows —, and
-                it meters premium requests rather than dollars. GLM logs are server-lifecycle
-                only; Alibaba has no local session log — see the Providers tab for both.
+                Activity spans every provider that keeps a local session log. Anthropic and
+                Moonshot record per-turn tokens (input, output and cache read/write);
+                Anthropic cost is estimated from standard-tier pricing, while Moonshot
+                bills a flat-rate plan. GitHub totals are written when a session ends, so a
+                running one shows —, and it meters premium requests rather than dollars.
+                Z.ai logs are server-lifecycle only; Alibaba has no local session
+                log — see the Providers tab for both.
               </p>
             </div>
           </section>
@@ -513,7 +514,7 @@ export default function App() {
             <div className="prov">
               <ProviderCard
                 status="ok"
-                name="Claude Code"
+                name="Anthropic"
                 meta={`${claudeProv?.sessions ?? 0} sessions · local logs`}
                 primary={claudeProv?.tokens ?? "—"}
                 secondary={claudeProv?.cost}
@@ -521,7 +522,7 @@ export default function App() {
               {showCopilot && (
                 <ProviderCard
                   status={vendorState(snapshot.vendor?.copilot)}
-                  name="GitHub Copilot"
+                  name="GitHub"
                   meta={vendorMeta(snapshot.vendor?.copilot, "not connected")}
                   primary={vendorPrimary(snapshot.vendor?.copilot)}
                 />
@@ -529,7 +530,7 @@ export default function App() {
               {(showGlm || glm.sessions > 0) && (
                 <ProviderCard
                   status={vendorState(snapshot.vendor?.glm)}
-                  name="GLM / z.ai"
+                  name="Z.ai"
                   meta={vendorMeta(snapshot.vendor?.glm, "no API key set")}
                   primary={vendorPrimary(snapshot.vendor?.glm)}
                   detail={`${glm.sessions} server sessions · ${glm.activeDays} active days · last ${glm.last}`}
@@ -544,7 +545,7 @@ export default function App() {
               {showAlibaba && (
                 <ProviderCard
                   status={vendorState(snapshot.vendor?.alibaba)}
-                  name="Alibaba Cloud"
+                  name="Alibaba"
                   meta={vendorMeta(snapshot.vendor?.alibaba, "install the Bailian CLI (bl)")}
                   primary={vendorPrimary(snapshot.vendor?.alibaba)}
                 />
@@ -552,7 +553,7 @@ export default function App() {
               {showKimi && (
                 <ProviderCard
                   status={vendorState(snapshot.vendor?.kimi)}
-                  name="Kimi Code"
+                  name="Moonshot"
                   meta={vendorMeta(snapshot.vendor?.kimi, "sign in via the Kimi Code CLI")}
                   primary={vendorPrimary(snapshot.vendor?.kimi)}
                 />
@@ -561,7 +562,7 @@ export default function App() {
             <div className="note">
               <InfoIcon />
               <p>
-                Live figures come from each provider’s API; Claude totals and GLM
+                Live figures come from each provider’s API; Anthropic totals and Z.ai
                 activity are read from local logs.
               </p>
             </div>
@@ -746,11 +747,11 @@ function GlmOverview({
         <div className="connect-card">
           <p className="connect-title">
             {vendor?.configured
-              ? `Couldn’t reach z.ai${vendor.error ? `: ${vendor.error}` : ""}`
-              : "No GLM usage data yet"}
+              ? `Couldn’t reach Z.ai${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Z.ai usage data yet"}
           </p>
           <p className="connect-sub">
-            z.ai exposes no per-session tokens locally. Add your GLM Coding Plan API
+            Z.ai exposes no per-session tokens locally. Add your GLM Coding Plan API
             key to pull real 5-hour &amp; weekly quota.
           </p>
           <button className="btn primary" onClick={onConnect}>
@@ -834,16 +835,16 @@ function CopilotOverview({
         <div className="connect-card">
           <p className="connect-title">
             {vendor?.configured
-              ? `Couldn’t read Copilot usage${vendor.error ? `: ${vendor.error}` : ""}`
-              : "No Copilot token found"}
+              ? `Couldn’t read GitHub usage${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No GitHub token found"}
           </p>
           <p className="connect-sub">
             Reads your editor / <code>gh</code> CLI Copilot token to show real
-            premium-request quota. If none is found, connect GitHub Copilot to
+            premium-request quota. If none is found, connect GitHub to
             authorize this app.
           </p>
           <button className="btn primary" onClick={onConnect}>
-            Connect Copilot →
+            Connect GitHub →
           </button>
         </div>
       )}
@@ -889,14 +890,14 @@ function AlibabaOverview({
         // show a reconnect card instead of the indefinite "Connecting…"
         // spinner. Mirrors ClaudeConnectPrompt's expired branch.
         <div className="connect-card warn">
-          <p className="connect-title">Alibaba Cloud session expired</p>
+          <p className="connect-title">Alibaba session expired</p>
           <p className="connect-sub">
             The Bailian CLI&rsquo;s console session has expired. Sign in again to
             restore your usage and quota.
           </p>
           {vendor.error && <p className="connect-hint">{vendor.error}</p>}
           <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
-            {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
+            {loginBusy ? "Signing in…" : "Sign in to Alibaba"}
           </button>
           {loginError && <p className="key-err">{loginError}</p>}
         </div>
@@ -910,7 +911,7 @@ function AlibabaOverview({
             <span className="ping p2" />
             <span className="core" />
           </div>
-          <p className="connect-title">Connecting to Alibaba Cloud…</p>
+          <p className="connect-title">Connecting to Alibaba…</p>
           <p className="connect-sub">
             Reading your Bailian usage — this can take a moment. We&rsquo;ll keep
             retrying in the background.
@@ -922,7 +923,7 @@ function AlibabaOverview({
         </div>
       ) : (
         <div className="connect-card">
-          <p className="connect-title">No Alibaba Cloud usage data yet</p>
+          <p className="connect-title">No Alibaba usage data yet</p>
           <p className="connect-sub">
             Install the Bailian CLI (<code>npm i -g bailian-cli</code>) and run{" "}
             <code>bl auth login --console</code> to see token usage and quota.
@@ -984,14 +985,14 @@ function KimiOverview({
         // login (mirrors Alibaba's expired card) instead of sending the user
         // off to a terminal.
         <div className="connect-card warn">
-          <p className="connect-title">Kimi Code login expired</p>
+          <p className="connect-title">Moonshot login expired</p>
           <p className="connect-sub">
             Sign in again to restore your usage and quota — a browser window
             opens to approve the login.
           </p>
           {vendor.error && <p className="connect-hint">{vendor.error}</p>}
           <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
-            {loginBusy ? "Signing in…" : "Sign in to Kimi Code"}
+            {loginBusy ? "Signing in…" : "Sign in to Moonshot"}
           </button>
           {loginError && <p className="key-err">{loginError}</p>}
         </div>
@@ -999,8 +1000,8 @@ function KimiOverview({
         <div className="connect-card">
           <p className="connect-title">
             {vendor?.configured
-              ? `Couldn’t reach Kimi Code${vendor.error ? `: ${vendor.error}` : ""}`
-              : "No Kimi Code usage data yet"}
+              ? `Couldn’t reach Moonshot${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Moonshot usage data yet"}
           </p>
           <p className="connect-sub">
             Reads the Kimi Code CLI&rsquo;s own login to show your real weekly
@@ -1031,12 +1032,12 @@ function ClaudeConnectPrompt({
   return (
     <div className={`connect-card${expired ? " warn" : ""}`}>
       <p className="connect-title">
-        {expired ? "Claude login expired" : "Not connected to Claude"}
+        {expired ? "Anthropic login expired" : "Not connected to Anthropic"}
       </p>
       <p className="connect-sub">
         {expired
           ? "Reconnect to see your session limits, token usage, and history."
-          : "Sign in to Claude to see your session limits, token usage, and history."}
+          : "Sign in to Anthropic to see your session limits, token usage, and history."}
       </p>
       <button className="reconnect-btn" onClick={onConnect}>
         {expired ? "Reconnect in Settings →" : "Connect in Settings →"}

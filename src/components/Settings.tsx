@@ -117,11 +117,11 @@ const ROTATE_OPTIONS = [
 const MAX_OVERVIEW = 5;
 
 const OVERVIEW_PROVIDERS = [
-  { id: "claude", label: "Claude" },
-  { id: "glm", label: "GLM / z.ai" },
-  { id: "copilot", label: "GitHub Copilot" },
-  { id: "alibaba", label: "Alibaba Cloud" },
-  { id: "kimi", label: "Kimi Code" },
+  { id: "claude", label: "Anthropic" },
+  { id: "glm", label: "Z.ai" },
+  { id: "copilot", label: "GitHub" },
+  { id: "alibaba", label: "Alibaba" },
+  { id: "kimi", label: "Moonshot" },
 ] as const;
 
 export function Settings({
@@ -231,11 +231,11 @@ export function Settings({
           value={settings.tooltipProvider}
           onChange={(e) => setTooltipProvider(e.target.value as TooltipProvider)}
         >
-          <option value="claude">Claude</option>
-          <option value="glm">GLM / z.ai</option>
-          <option value="copilot">GitHub Copilot</option>
-          <option value="alibaba">Alibaba Cloud</option>
-          <option value="kimi">Kimi Code</option>
+          <option value="claude">Anthropic</option>
+          <option value="glm">Z.ai</option>
+          <option value="copilot">GitHub</option>
+          <option value="alibaba">Alibaba</option>
+          <option value="kimi">Moonshot</option>
         </select>
       </div>
       <div className="key-row">
@@ -365,7 +365,7 @@ export function Settings({
       )}
 
       <div className="sec-head">
-        <h2>Claude / Anthropic</h2>
+        <h2>Anthropic</h2>
         <span className="meta">
           {claudeSignedIn && !claudeExpired ? "connected" : "not connected"}
         </span>
@@ -405,7 +405,7 @@ export function Settings({
       />
 
       <div className="sec-head">
-        <h2>GitHub Copilot</h2>
+        <h2>GitHub</h2>
         <span className="meta">{copilotConnected ? "connected" : "not connected"}</span>
       </div>
       <CopilotConnect
@@ -418,7 +418,7 @@ export function Settings({
       />
 
       <div className="sec-head">
-        <h2>GLM / z.ai</h2>
+        <h2>Z.ai</h2>
         <span className="meta">stored encrypted</span>
       </div>
       <KeyRow
@@ -437,7 +437,7 @@ export function Settings({
       </div>
 
       <div className="sec-head">
-        <h2>Alibaba Cloud</h2>
+        <h2>Alibaba</h2>
         <span className="meta">via Bailian CLI</span>
       </div>
       <BailianCli
@@ -458,7 +458,7 @@ export function Settings({
       />
 
       <div className="sec-head">
-        <h2>Kimi Code</h2>
+        <h2>Moonshot</h2>
         <span className="meta">via Kimi Code CLI</span>
       </div>
       <KimiCli
@@ -542,14 +542,14 @@ function ClaudeSignIn({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">Claude login<InfoTip>
+        <span className="key-label">Anthropic login<InfoTip>
           {expired
-            ? <p style={{ margin: "0 0 8px" }}>Your Claude login expired — reconnect to restore live usage.</p>
+            ? <p style={{ margin: "0 0 8px" }}>Your Anthropic login expired — reconnect to restore live usage.</p>
             : <p style={{ margin: "0 0 8px" }}>Connect your <strong>Claude Pro/Max</strong> account for live session &amp; weekly usage.</p>}
           <div className="info-steps">
             <div className="info-step">
               <span className="info-step-num">1</span>
-              <span className="info-step-body">Click <strong>Connect Claude</strong> — a browser window opens to Anthropic.</span>
+              <span className="info-step-body">Click <strong>Connect Anthropic</strong> — a browser window opens to Anthropic.</span>
             </div>
             <div className="info-step">
               <span className="info-step-num">2</span>
@@ -612,7 +612,7 @@ function ClaudeSignIn({
         </>
       ) : (
         <button className="btn primary" disabled={busy} onClick={() => void begin()}>
-          {busy ? "Starting…" : expired ? "Reconnect Claude" : "Connect Claude"}
+          {busy ? "Starting…" : expired ? "Reconnect Anthropic" : "Connect Anthropic"}
         </button>
       )}
       {error && <p className="key-err">{error}</p>}
@@ -640,7 +640,7 @@ function ClaudeSignOut({
   return (
     <div className="key-row">
       <div className="key-top">
-        <span className="key-label">Claude login<InfoTip>
+        <span className="key-label">Anthropic login<InfoTip>
           <p style={{ margin: "0 0 8px" }}>Disconnecting removes the <strong>shared Claude Code login</strong>. What happens:</p>
           <div className="info-steps">
             <div className="info-step">
@@ -845,7 +845,7 @@ function CopilotConnect({
   // (connected / not connected), instead of only showing it when connected.
   const header = (
     <div className="key-top">
-      <span className="key-label">Copilot login<InfoTip>Usage is read automatically from your editor or <code>gh</code> CLI Copilot token. Only connect here if no token is found automatically. Authorizes via GitHub's device flow using VS Code Copilot's client ID.</InfoTip></span>
+      <span className="key-label">GitHub login<InfoTip>Usage is read automatically from your editor or <code>gh</code> CLI Copilot token. Only connect here if no token is found automatically. Authorizes via GitHub's device flow using VS Code Copilot's client ID.</InfoTip></span>
       <span className={`key-status ${connected ? "set" : ""}`}>
         {connected ? "● connected" : "○ not connected"}
       </span>
@@ -896,7 +896,7 @@ function CopilotConnect({
     <div className="key-row">
       {header}
       <button className="btn primary" disabled={busy} onClick={begin}>
-        {busy ? "Starting…" : "Connect GitHub Copilot"}
+        {busy ? "Starting…" : "Connect GitHub"}
       </button>
       {msg && <p className="key-err">{msg}</p>}
     </div>
@@ -1032,11 +1032,11 @@ function BailianCli({
         <div className="key-top">
           <span className="key-label">Bailian CLI (<code>bl</code>)<InfoTip>{expired
             ? "Your console session has expired. Sign in again to refresh it — a browser window will open."
-            : "Sign in to connect your Alibaba Cloud account — a browser window will open to complete the login."}</InfoTip></span>
+            : "Sign in to connect your Alibaba account — a browser window will open to complete the login."}</InfoTip></span>
           <span className="key-status">{expired ? "○ session expired" : "○ not authenticated"}</span>
         </div>
         <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
-          {loginBusy ? "Signing in…" : "Sign in to Alibaba Cloud"}
+          {loginBusy ? "Signing in…" : "Sign in to Alibaba"}
         </button>
         {expired && !cli?.hasOpenApi && (
           <AkSkForm onSubmit={doSetOpenApi} busy={setOpenApiBusy} error={setOpenApiError} />
@@ -1216,12 +1216,12 @@ function KimiCli({
       <div className="key-row">
         <div className="key-top">
           <span className="key-label">Kimi Code CLI (<code>kimi</code>)<InfoTip>{expired
-            ? "Your Kimi Code login has expired. Sign in again — a browser window opens to approve the device login. Shares the kimi CLI login."
-            : "Sign in to connect your Kimi Code account — a browser window opens to approve the device login. Shares the kimi CLI login, so this signs it in too."}</InfoTip></span>
+            ? "Your Moonshot login has expired. Sign in again — a browser window opens to approve the device login. Shares the kimi CLI login."
+            : "Sign in to connect your Moonshot account — a browser window opens to approve the device login. Shares the kimi CLI login, so this signs it in too."}</InfoTip></span>
           <span className="key-status">{expired ? "○ login expired" : "○ not signed in"}</span>
         </div>
         <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
-          {loginBusy ? "Signing in…" : expired ? "Reconnect Kimi Code" : "Sign in to Kimi Code"}
+          {loginBusy ? "Signing in…" : expired ? "Reconnect Moonshot" : "Sign in to Moonshot"}
         </button>
         {loginBusy && (
           device ? (

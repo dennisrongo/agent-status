@@ -164,7 +164,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
 
     // Replace the estimated Claude meters with live subscription usage when
     // enabled and a Claude Code token is available.
-    const LIVE_NOTE: &str = "Live from Claude — the same session / weekly utilization your /usage shows, read from your Claude Code login.";
+    const LIVE_NOTE: &str = "Live from Anthropic — the same session / weekly utilization your /usage shows, read from your Claude Code login.";
     let mut fresh_live: Option<Vec<crate::scanner::Bucket>> = None;
     let mut live_attempted = false;
     let mut refresh_attempted = false;
@@ -198,10 +198,10 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 }
             } else if ts.has_refresh {
                 // Refreshed too recently to retry the rate-limited token endpoint.
-                force_reauth = Some("Claude login expired — reconnecting shortly…".to_string());
+                force_reauth = Some("Anthropic login expired — reconnecting shortly…".to_string());
             } else {
                 force_reauth =
-                    Some("Claude login expired — sign in again to restore live usage.".to_string());
+                    Some("Anthropic login expired — sign in again to restore live usage.".to_string());
             }
         }
 
@@ -220,7 +220,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 // revoked elsewhere. Prompt a reconnect; don't show stale cache.
                 snapshot.limits.needs_reauth = true;
                 snapshot.limits.estimate_note =
-                    "Claude login expired — reconnect to restore live usage.".to_string();
+                    "Anthropic login expired — reconnect to restore live usage.".to_string();
             } else if live.ok && !live.buckets.is_empty() {
                 snapshot.limits.buckets = live.buckets.clone();
                 snapshot.limits.plan_label = "live".to_string();
@@ -237,7 +237,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 snapshot.limits.live = true;
                 let reason = live.error.unwrap_or_else(|| "temporarily unavailable".to_string());
                 snapshot.limits.estimate_note = format!(
-                    "Live from Claude (last good reading) — couldn’t refresh just now ({reason})."
+                    "Live from Anthropic (last good reading) — couldn’t refresh just now ({reason})."
                 );
             } else if live.configured {
                 // A Claude login exists but the live read failed and we have no
@@ -246,12 +246,12 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 let reason = live.error.unwrap_or_else(|| "temporarily unavailable".to_string());
                 snapshot.limits.pending = true;
                 snapshot.limits.estimate_note =
-                    format!("Reading live Claude usage… (couldn’t reach it just now: {reason})");
+                    format!("Reading live Anthropic usage… (couldn’t reach it just now: {reason})");
             } else if let Some(err) = live.error {
                 // No Claude login at all → live can never work. detection reports
                 // the signed-out state; just record why the live read failed.
                 snapshot.limits.estimate_note = format!(
-                    "Showing local estimate — couldn’t read live Claude usage ({err}). Limits are against an editable plan ceiling."
+                    "Showing local estimate — couldn’t read live Anthropic usage ({err}). Limits are against an editable plan ceiling."
                 );
             }
         } else if let Some(cached) = cached_live {
@@ -265,7 +265,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             // Throttled before the first reading, but a login exists → live data
             // is still coming. Show pending rather than the estimate.
             snapshot.limits.pending = true;
-            snapshot.limits.estimate_note = "Reading live Claude usage…".to_string();
+            snapshot.limits.estimate_note = "Reading live Anthropic usage…".to_string();
         }
         // else: throttled, no cached reading, and no login → the scanner's local
         // estimate stands as-is; detection reports the signed-out state to the UI.
@@ -440,7 +440,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 // "08-15 14:00" — doubles as the meta line's `#id` and keeps
                 // React keys unique (one row per hour by construction).
                 id: h.at.with_timezone(&chrono::Local).format("%m-%d %H:00").to_string(),
-                project: "GLM / z.ai".to_string(),
+                project: "Z.ai".to_string(),
                 model: h.model.clone(),
                 tokens: h.tokens,
                 cost: 0.0,
@@ -604,7 +604,7 @@ async fn resolve_copilot(
         // throttled second collect on open can't contradict the first.
         let status = cached_good
             .or(prev)
-            .unwrap_or_else(|| VendorStatus::failed("Copilot status not read yet"));
+            .unwrap_or_else(|| VendorStatus::failed("GitHub status not read yet"));
         return (status, None, false, false);
     }
     match fetch_copilot(token).await {

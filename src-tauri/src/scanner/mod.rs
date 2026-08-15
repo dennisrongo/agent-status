@@ -698,7 +698,7 @@ fn build_snapshot(
             when_dt,
             SessionRow {
                 id: "glm".to_string(),
-                project: "GLM / z.ai".to_string(),
+                project: "Z.ai".to_string(),
                 model: String::new(),
                 tokens: 0,
                 cost: 0.0,
@@ -745,14 +745,14 @@ fn build_snapshot(
 
     let mut providers = vec![
         Provider {
-            name: "Claude Code".to_string(),
+            name: "Anthropic".to_string(),
             status: "connected".to_string(),
             tokens: fmt_tokens(grand_tokens as f64),
             cost: fmt_cost(grand_cost),
             sessions: session_count,
         },
         Provider {
-            name: "GLM / z.ai".to_string(),
+            name: "Z.ai".to_string(),
             status: "connected".to_string(),
             tokens: EM_DASH.to_string(),
             cost: EM_DASH.to_string(),
@@ -761,7 +761,7 @@ fn build_snapshot(
     ];
     if kimi_total.sessions > 0 {
         providers.push(Provider {
-            name: "Kimi Code".to_string(),
+            name: "Moonshot".to_string(),
             status: "connected".to_string(),
             tokens: fmt_tokens(kimi_total.tokens as f64),
             cost: EM_DASH.to_string(),
@@ -770,7 +770,7 @@ fn build_snapshot(
     }
     if copilot_total.sessions > 0 {
         providers.push(Provider {
-            name: "GitHub Copilot".to_string(),
+            name: "GitHub".to_string(),
             status: "connected".to_string(),
             tokens: fmt_tokens(copilot_total.tokens as f64),
             cost: EM_DASH.to_string(),
@@ -1157,7 +1157,7 @@ fn trim_float(v: f64) -> String {
 /// timestamp (parsed from the leading `[...]` bracket), so callers can merge a
 /// GLM summary row into the sessions list by recency.
 fn scan_glm(zai_root: &Path) -> (Glm, Option<DateTime<Utc>>) {
-    let note = "Local z.ai MCP logs record server lifecycle only — token/cost not exposed locally."
+    let note = "Local Z.ai MCP logs record server lifecycle only — token/cost not exposed locally."
         .to_string();
     let pattern = format!("{}/zai-mcp-*.log", zai_root.to_string_lossy());
     let mut sessions = 0u32;
@@ -1358,7 +1358,7 @@ mod tests {
         // assertion that the timestamp parse actually works.
         assert_eq!(snap.sessions[0].provider, "claude");
         assert_eq!(snap.sessions[1].provider, "glm");
-        assert_eq!(snap.sessions[1].project, "GLM / z.ai");
+        assert_eq!(snap.sessions[1].project, "Z.ai");
         assert_eq!(snap.sessions[1].model, ""); // no model badge for GLM
     }
 
@@ -2118,8 +2118,8 @@ mod tests {
 
         // Each contributing provider gets a Providers-tab row.
         let names: Vec<&str> = snap.providers.iter().map(|p| p.name.as_str()).collect();
-        assert!(names.contains(&"Kimi Code"), "got {names:?}");
-        assert!(names.contains(&"GitHub Copilot"), "got {names:?}");
+        assert!(names.contains(&"Moonshot"), "got {names:?}");
+        assert!(names.contains(&"GitHub"), "got {names:?}");
     }
 
     #[test]

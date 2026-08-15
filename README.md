@@ -6,7 +6,7 @@
 
 ### A lightweight **menubar widget** that tracks your AI coding agent usage in real time.
 
-Per-provider usage · live vendor quota · token spend · cost estimates · session history — for **Claude Code, GLM/z.ai, GitHub Copilot, Alibaba Bailian, and Kimi Code** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
+Per-provider usage · live vendor quota · token spend · cost estimates · session history — for coding agents from **Anthropic, Z.ai, GitHub, Alibaba, and Moonshot** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
 
 <br/>
 
@@ -28,7 +28,7 @@ Per-provider usage · live vendor quota · token spend · cost estimates · sess
 ## ✨ Features
 
 ### One widget, five providers
-A segmented Overview switches between **Claude Code, GLM/z.ai, GitHub Copilot, Alibaba Bailian, and Kimi Code** — each with its own usage meters and a live reset countdown.
+A segmented Overview switches between **Anthropic, Z.ai, GitHub, Alibaba, and Moonshot** — each with its own usage meters and a live reset countdown.
 
 ### The data
 - **Real token counts.** Exact per-request tokens parsed straight from **Claude Code's session logs** (input, output, cache read/write) and **GLM server activity** from local MCP logs; Copilot and Bailian report live quota straight from their APIs.
@@ -65,7 +65,7 @@ Signed auto-updates via the Tauri updater — an in-app "Update & restart" banne
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/providers.png" alt="Providers" width="320"/><br/>
-      <b>Providers</b> — one card per provider (Claude / GLM / Copilot / Alibaba / Kimi): connection status + live usage
+      <b>Providers</b> — one card per provider (Anthropic / Z.ai / GitHub / Alibaba / Moonshot): connection status + live usage
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/settings.png" alt="Settings" width="320"/><br/>
@@ -151,7 +151,7 @@ Each provider reports different things. Local data comes from parsing logs on di
 
 ### Sessions ("Recent activity")
 
-Rows come from every CLI that keeps a local session log — Claude, Kimi, and Copilot — interleaved by recency. **GLM contributes real per-hour rows** from the z.ai monitor API (`/api/monitor/usage/model-usage`) when an API key is set — one row per active hour with tokens, call count, and the dominant model, covering activity from any machine, not just this one. Without a key it falls back to a single summary row from the local MCP logs. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own.
+Rows come from every CLI that keeps a local session log — Anthropic, Moonshot, and GitHub — interleaved by recency. **Z.ai contributes real per-hour rows** from the Z.ai monitor API (`/api/monitor/usage/model-usage`) when an API key is set — one row per active hour with tokens, call count, and the dominant model, covering activity from any machine, not just this one. Without a key it falls back to a single summary row from the local MCP logs. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own.
 
 Anything a provider doesn't record locally shows `—` rather than a zero.
 
@@ -186,7 +186,7 @@ notarization credentials, verification, universal builds, troubleshooting).
 ## ⚙️ Configuration
 
 - **Auto-refresh interval** — choose 10s / 15s / 30s / 1m / 2m / 5m in Settings (default **30s**); takes effect on the next cycle.
-- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (GLM / Copilot / Alibaba / Kimi) report their own limits regardless.
+- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (Z.ai / GitHub / Alibaba / Moonshot) report their own limits regardless.
 - **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** — all from inside the app. **Kimi Code** needs no in-app setup: it picks up the Kimi Code CLI's login (`kimi login`) automatically.
 - **API keys** (Settings tab) — optional **z.ai** and **Anthropic admin** (`sk-ant-admin…`) keys for live vendor data. (The Anthropic admin key reports org-level cost and is separate from your Claude Code subscription quota.)
 - **z.ai endpoint** — editable; confirm it against your account's billing API.

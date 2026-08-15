@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Claude, GLM, Copilot, Alibaba Cloud, Kimi Code). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
+A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Anthropic, Z.ai, GitHub, Alibaba, Moonshot). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
 
 ## Commands
 
