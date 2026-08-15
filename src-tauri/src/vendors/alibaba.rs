@@ -498,7 +498,8 @@ fn expired_status(e: &BlError) -> VendorStatus {
 pub fn parse(plan: &Value, now: DateTime<Utc>) -> VendorStatus {
     let mut detail: Vec<KeyVal> = Vec::new();
 
-    if let Some(d) = datav2_payload(plan) {
+    let envelope = datav2_payload(plan);
+    if let Some(d) = envelope {
         let pct_5h = d.get("per5HourPercentage").and_then(value_as_f64);
         let pct_7d = d.get("per1WeekPercentage").and_then(value_as_f64);
         let reset_5h = d.get("per5HourResetTime").and_then(value_as_f64);
@@ -521,12 +522,23 @@ pub fn parse(plan: &Value, now: DateTime<Utc>) -> VendorStatus {
     }
 
     if detail.is_empty() {
+        // A `data` object without the DataV2 envelope usually means the console
+        // API changed shape — flag it in the secondary line instead of reading
+        // as a plain "no plan data" (the Kimi `used`-field removal failed
+        // exactly this silently). A null/absent `data` stays a plain no-plan
+        // reading.
+        let unexpected_shape =
+            envelope.is_none() && plan.get("data").map(|d| d.is_object()).unwrap_or(false);
         return VendorStatus {
             configured: true,
             ok: true,
             error: None,
             primary: "—".to_string(),
-            secondary: "no plan data".to_string(),
+            secondary: if unexpected_shape {
+                "no plan data · unexpected response shape".to_string()
+            } else {
+                "no plan data".to_string()
+            },
             detail: Vec::new(),
             auth_expired: false,
         };
@@ -773,6 +785,22 @@ mod tests {
         assert!(s.ok);
         assert_eq!(s.primary, "—");
         assert!(s.detail.is_empty());
+    }
+
+    #[test]
+    fn envelope_moved_surfaces_a_shape_hint() {
+        // `data` exists but the DataV2 envelope is gone — likely an API shape
+        // change; must not read as a plain "no plan data".
+        let s = parse(&json!({ "data": { "DataV3": { "data": { "data": {} } } } }), now());
+        assert!(s.ok);
+        assert_eq!(s.secondary, "no plan data · unexpected response shape");
+    }
+
+    #[test]
+    fn null_data_is_plain_no_plan_data() {
+        let s = parse(&json!({ "data": null }), now());
+        assert!(s.ok);
+        assert_eq!(s.secondary, "no plan data");
     }
 
     #[test]
