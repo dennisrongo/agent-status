@@ -1,4 +1,4 @@
-//! Kimi Code (Moonshot AI) LIVE usage client.
+//! Kimi Code (Moonshot) LIVE usage client.
 //!
 //! Reads the OAuth access token the Kimi Code CLI stored at
 //! `$KIMI_CODE_HOME/credentials/kimi-code.json` (default `~/.kimi-code`) and
@@ -72,7 +72,7 @@ pub async fn fetch(now: DateTime<Utc>) -> VendorStatus {
         .map(|exp| now.timestamp() >= exp - EXPIRY_SKEW_SECS)
         .unwrap_or(false);
     if expired {
-        return login_expired("Kimi Code login expired — sign in again from Settings (or run `kimi login`).");
+        return login_expired("Moonshot login expired — sign in again from Settings (or run `kimi login`).");
     }
 
     let client = match reqwest::Client::builder()
@@ -98,7 +98,7 @@ pub async fn fetch(now: DateTime<Utc>) -> VendorStatus {
                     // The clock looked valid but the server rejected the token
                     // (revoked elsewhere) — same re-login state as a dead clock.
                     return login_expired(
-                        "Kimi Code login was rejected (HTTP 401) — sign in again from Settings (or run `kimi login`)."
+                        "Moonshot login was rejected (HTTP 401) — sign in again from Settings (or run `kimi login`)."
                             .to_string(),
                     );
                 }
@@ -254,7 +254,7 @@ pub async fn refresh(now: DateTime<Utc>) -> Result<(), String> {
         // login can fix it.
         if status.as_u16() == 400 || status.as_u16() == 401 {
             return Err(
-                "Kimi Code refresh token expired — sign in again from Settings (or run `kimi login`)."
+                "Moonshot refresh token expired — sign in again from Settings (or run `kimi login`)."
                     .into(),
             );
         }
@@ -535,7 +535,7 @@ pub fn login(on_code: impl FnOnce(DeviceLogin)) -> Result<String, String> {
 
     let status = child.wait().map_err(|e| format!("wait: {e}"))?;
     if status.success() {
-        Ok("Authenticated with Kimi Code. Usage will appear on the next refresh.".to_string())
+        Ok("Authenticated with Moonshot. Usage will appear on the next refresh.".to_string())
     } else {
         // Surface the CLI's own reason (last non-empty stderr line) — e.g. a
         // cancelled or expired device flow.
@@ -591,7 +591,7 @@ pub fn logout() -> Result<String, String> {
         .map_err(|_| "No Kimi Code login found — already signed out.".to_string())?;
     let tombstone = build_logout_tombstone(&raw)?;
     std::fs::write(&path, tombstone).map_err(|e| format!("write {}: {e}", path.display()))?;
-    Ok("Disconnected from Kimi Code — the CLI is signed out too.".to_string())
+    Ok("Disconnected from Moonshot — the CLI is signed out too.".to_string())
 }
 
 /// Pure builder for the logout tombstone: blanks the tokens and zeroes the
@@ -731,8 +731,13 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
 /// non-finite/hostile value), so a garbled window is skipped rather than
 /// rendered as "NaN% used" — mirrors glm.rs.
 fn meter_row(label: &str, detail: &Value, now: DateTime<Utc>) -> Option<KeyVal> {
-    let used = detail.get("used").and_then(value_as_f64);
     let limit = detail.get("limit").and_then(value_as_f64);
+    let used = detail.get("used").and_then(value_as_f64).or_else(|| {
+        // The live API now reports `remaining` instead of `used` on quota
+        // windows — derive it (limit − remaining, floored at 0) so those
+        // payloads still meter. An explicit `used` always wins.
+        Some((limit? - detail.get("remaining").and_then(value_as_f64)?).max(0.0))
+    });
     let pct = match (used, limit) {
         (Some(u), Some(l)) if l > 0.0 => Some(u / l * 100.0),
         _ => None,
@@ -937,6 +942,43 @@ mod tests {
         let s = parse(&v, now());
         assert!(s.ok);
         assert_eq!(s.detail[0].pct, Some(25.0));
+    }
+
+    #[test]
+    fn remaining_only_windows_derive_used() {
+        // The live API sends {limit, remaining, resetTime} with no `used` —
+        // without the derivation every window is dropped and the whole tab
+        // shows the "unexpected shape" error despite a healthy login.
+        let v = json!({
+            "user": { "membership": { "level": "LEVEL_INTERMEDIATE" } },
+            "usage": { "limit": "100", "remaining": "96", "resetTime": reset_in(60 * 24 * 7) },
+            "limits": [
+                { "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+                  "detail": { "limit": 100, "remaining": 82, "resetTime": reset_in(90) } }
+            ]
+        });
+        let s = parse(&v, now());
+        assert!(s.ok, "should parse ok: {:?}", s.error);
+        assert_eq!(s.detail[0].label, "Session");
+        assert_eq!(s.detail[0].pct, Some(18.0));
+        assert_eq!(s.detail[1].label, "Weekly");
+        assert_eq!(s.detail[1].pct, Some(4.0));
+        assert_eq!(s.primary, "4% used");
+    }
+
+    #[test]
+    fn explicit_used_wins_over_derived() {
+        let v = json!({ "usage": { "limit": "100", "used": "25", "remaining": "0", "resetTime": reset_in(60) } });
+        let s = parse(&v, now());
+        assert_eq!(s.detail[0].pct, Some(25.0));
+    }
+
+    #[test]
+    fn remaining_over_limit_floors_used_at_zero() {
+        let v = json!({ "usage": { "limit": "100", "remaining": "120", "resetTime": reset_in(60) } });
+        let s = parse(&v, now());
+        assert!(s.ok);
+        assert_eq!(s.detail[0].pct, Some(0.0));
     }
 
     #[test]
