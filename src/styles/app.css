@@ -17,12 +17,13 @@
   /* Per-vendor brand colors for the provider indicators (kept separate from
      --accent, which the whole app uses). Claude coral/orange (Anthropic),
      z.ai blue (matches z.ai's own UI), GitHub Copilot green, Alibaba orange,
-     Kimi rose (Moonshot). */
+     Kimi rose (Moonshot), Grok gold. */
   --claude:    oklch(70% 0.14 46);
   --glm:       oklch(64% 0.17 264);
   --copilot:   oklch(72% 0.16 145);
   --alibaba:   oklch(70% 0.18 55);
   --kimi:      oklch(72% 0.14 350);
+  --grok:      oklch(78% 0.11 90);
   --font:      -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   --mono:      "JetBrains Mono", "SF Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
@@ -68,6 +69,7 @@ body {
 .boot-dot.copilot { background: var(--copilot); animation-delay: .32s; }
 .boot-dot.alibaba { background: var(--alibaba); animation-delay: .48s; }
 .boot-dot.kimi { background: var(--kimi); animation-delay: .64s; }
+.boot-dot.grok { background: var(--grok); animation-delay: .80s; }
 @keyframes boot-pulse { 0%, 100% { opacity: .22; transform: scale(.75); } 40% { opacity: 1; transform: scale(1.2); } }
 .boot-skel { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 10px; }
 .skel-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
@@ -128,6 +130,7 @@ body {
 .seg-dot.copilot { background: var(--copilot); }
 .seg-dot.alibaba { background: var(--alibaba); }
 .seg-dot.kimi { background: var(--kimi); }
+.seg-dot.grok { background: var(--grok); }
 
 /* GLM connect empty-state */
 .connect-card { background: var(--surface); border: 1px dashed var(--border-2); border-radius: 10px; padding: 16px 14px; text-align: center; }
@@ -316,6 +319,7 @@ body {
 .s-prov.copilot { background: var(--copilot); }
 .s-prov.alibaba { background: var(--alibaba); }
 .s-prov.kimi { background: var(--kimi); }
+.s-prov.grok { background: var(--grok); }
 .sess-row .s-meta { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 3px; display: flex; gap: 8px; letter-spacing: -0.02em; }
 .badge { display: inline-block; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-2); color: var(--muted); }
 .badge.opus { color: var(--violet); border-color: oklch(70% 0.13 290 / .4); }

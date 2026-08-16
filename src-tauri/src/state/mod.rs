@@ -126,6 +126,11 @@ pub struct AppState {
     /// behind; we renew it in place, but a dead refresh token isn't retried
     /// against the token endpoint more than once per `KIMI_REFRESH_MIN_SECS`.
     pub kimi_refresh_attempted_at: Option<DateTime<Utc>>,
+    /// When an automatic Grok token *refresh* was last attempted. Grok access
+    /// tokens last a few hours and the CLI only renews them while it runs; a
+    /// dead refresh token isn't retried more than once per
+    /// `GROK_REFRESH_MIN_SECS`.
+    pub grok_refresh_attempted_at: Option<DateTime<Utc>>,
     /// Last *successful* z.ai 7-day model-usage reading. The payload is large
     /// (hourly buckets for a week) and the totals move slowly, so it's fetched
     /// at most once per `GLM_WEEK_MIN_SECS` and the cached reading is served in
@@ -176,6 +181,10 @@ pub const ALIBABA_MIN_SECS: i64 = 120;
 /// `LIVE_CLAUDE_REFRESH_MIN_SECS`.
 pub const KIMI_REFRESH_MIN_SECS: i64 = 60;
 
+/// Minimum seconds between automatic Grok token-refresh attempts. Mirrors
+/// `KIMI_REFRESH_MIN_SECS`.
+pub const GROK_REFRESH_MIN_SECS: i64 = 60;
+
 /// Longest a cached Copilot reading is served while live fetches keep failing.
 /// Short blips ride on the cache; beyond this the card admits it can't refresh
 /// rather than presenting an increasingly stale quota (or a window that has
@@ -214,6 +223,7 @@ impl AppState {
             alibaba_last_good_at: None,
             alibaba_attempted_at: None,
             kimi_refresh_attempted_at: None,
+            grok_refresh_attempted_at: None,
             glm_week_last_good: None,
             glm_week_last_good_at: None,
             glm_week_attempted_at: None,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, GrokCliStatus, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
 /** Clickable info icon that opens a popover with help text. Stays open until
  * the user clicks outside — so they can follow multi-step instructions. */
@@ -86,6 +86,16 @@ interface Props {
   logoutKimi: () => Promise<string | null>;
   kimiLogoutBusy: boolean;
   kimiLogoutError: string | null;
+  grokStatus: () => Promise<GrokCliStatus | null>;
+  installGrok: () => Promise<string | null>;
+  grokInstallBusy: boolean;
+  grokInstallError: string | null;
+  loginGrok: () => Promise<string | null>;
+  grokLoginBusy: boolean;
+  grokLoginError: string | null;
+  logoutGrok: () => Promise<string | null>;
+  grokLogoutBusy: boolean;
+  grokLogoutError: string | null;
   /** Authoritative Alibaba status from the usage fetch — reflects the real
    * connection state (incl. a console session that `bl auth status` can't see
    * as expired). Falls back to `bailianStatus()` before the first snapshot. */
@@ -93,6 +103,9 @@ interface Props {
   /** Authoritative Kimi Code status from the usage fetch — configured means the
    * CLI's OAuth login was found; authExpired means it's stale. */
   kimiVendorStatus?: VendorStatus;
+  /** Authoritative Grok status from the usage fetch — configured means the
+   * CLI's OAuth login was found; authExpired means it's stale. */
+  grokVendorStatus?: VendorStatus;
   keyError: string | null;
 }
 
@@ -122,6 +135,7 @@ const OVERVIEW_PROVIDERS = [
   { id: "copilot", label: "GitHub" },
   { id: "alibaba", label: "Alibaba" },
   { id: "kimi", label: "Moonshot" },
+  { id: "grok", label: "xAI" },
 ] as const;
 
 export function Settings({
@@ -171,10 +185,21 @@ export function Settings({
   kimiLoginBusy,
   kimiLoginError,
   logoutKimi,
+  grokStatus,
+  installGrok,
+  grokInstallBusy,
+  grokInstallError,
+  loginGrok,
+  grokLoginBusy,
+  grokLoginError,
+  logoutGrok,
+  grokLogoutBusy,
+  grokLogoutError,
   kimiLogoutBusy,
   kimiLogoutError,
   alibabaVendorStatus,
   kimiVendorStatus,
+  grokVendorStatus,
   keyError,
 }: Props) {
   const hidden = settings.hiddenProviders;
@@ -197,6 +222,9 @@ export function Settings({
       case "alibaba": return alibabaVendorStatus?.configured ? "CLI configured" : "not configured";
       case "kimi": return kimiVendorStatus?.configured
         ? kimiVendorStatus.authExpired ? "login expired" : "connected"
+        : "not detected";
+      case "grok": return grokVendorStatus?.configured
+        ? grokVendorStatus.authExpired ? "login expired" : "connected"
         : "not detected";
       default: return "";
     }
@@ -236,6 +264,7 @@ export function Settings({
           <option value="copilot">GitHub</option>
           <option value="alibaba">Alibaba</option>
           <option value="kimi">Moonshot</option>
+          <option value="grok">xAI</option>
         </select>
       </div>
       <div className="key-row">
@@ -470,6 +499,24 @@ export function Settings({
         logoutBusy={kimiLogoutBusy}
         logoutError={kimiLogoutError}
         vendorStatus={kimiVendorStatus}
+      />
+
+      <div className="sec-head">
+        <h2>xAI</h2>
+        <span className="meta">via Grok CLI</span>
+      </div>
+      <GrokCli
+        status={grokStatus}
+        install={installGrok}
+        installBusy={grokInstallBusy}
+        installError={grokInstallError}
+        login={loginGrok}
+        loginBusy={grokLoginBusy}
+        loginError={grokLoginError}
+        logout={logoutGrok}
+        logoutBusy={grokLogoutBusy}
+        logoutError={grokLogoutError}
+        vendorStatus={grokVendorStatus}
       />
 
       {keyError && <p className="key-err">{keyError}</p>}
@@ -1273,6 +1320,187 @@ function KimiCli({
         {vendorStatus?.ok
           ? vendorStatus.secondary
           : (vendorStatus?.error ?? "Authenticated via Kimi Code CLI.")}
+      </span>
+      <div style={{ marginTop: 8 }}>
+        {confirmLogout ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn"
+              disabled={logoutBusy}
+              onClick={async () => {
+                await doLogout();
+                setConfirmLogout(false);
+              }}
+            >
+              {logoutBusy ? "Disconnecting…" : "Confirm disconnect"}
+            </button>
+            <button className="btn" disabled={logoutBusy} onClick={() => setConfirmLogout(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="btn" onClick={() => setConfirmLogout(true)}>
+            Disconnect
+          </button>
+        )}
+        {logoutError && <p className="key-err">{logoutError}</p>}
+      </div>
+      {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+    </div>
+  );
+}
+
+function GrokCli({
+  status,
+  install,
+  installBusy,
+  installError,
+  login,
+  loginBusy,
+  loginError,
+  logout,
+  logoutBusy,
+  logoutError,
+  vendorStatus,
+}: {
+  status: () => Promise<GrokCliStatus | null>;
+  install: () => Promise<string | null>;
+  installBusy: boolean;
+  installError: string | null;
+  login: () => Promise<string | null>;
+  loginBusy: boolean;
+  loginError: string | null;
+  logout: () => Promise<string | null>;
+  logoutBusy: boolean;
+  logoutError: string | null;
+  vendorStatus?: VendorStatus;
+}) {
+  const [cli, setCli] = useState<GrokCliStatus | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(() => {
+    (async () => {
+      const s = await statusRef.current();
+      setCli(s);
+      setChecking(false);
+    })();
+  }, []);
+
+  const doInstall = async () => {
+    setMsg(null);
+    const result = await install();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doLogin = async () => {
+    setMsg(null);
+    const result = await login();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doLogout = async () => {
+    setMsg(null);
+    const result = await logout();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub">Checking for Grok CLI…</span>
+      </div>
+    );
+  }
+
+  const expired = vendorStatus?.authExpired ?? false;
+  const connected = vendorStatus
+    ? vendorStatus.configured && !expired
+    : (cli?.authenticated ?? false);
+
+  if (!cli?.installed) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Grok CLI (<code>grok</code>)<InfoTip>Reads your xAI / Grok Build usage via the login the CLI stores on this machine. Installs the official binary from x.ai into ~/.grok/bin on Windows and macOS.</InfoTip></span>
+          <span className="key-status">○ not installed</span>
+        </div>
+        <button className="btn primary" disabled={installBusy} onClick={() => void doInstall()}>
+          {installBusy ? "Installing…" : "Install Grok CLI"}
+        </button>
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+        {installError && <p className="key-err">{installError}</p>}
+        <span className="connect-sub" style={{ margin: "8px 0 0" }}>
+          Or see the{" "}
+          <a
+            className="about-link"
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              void invoke("open_url", { url: "https://docs.x.ai/build/overview" });
+            }}
+          >
+            setup guide
+          </a>
+          .
+        </span>
+      </div>
+    );
+  }
+
+  if (!connected) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Grok CLI (<code>grok</code>)<InfoTip>{expired
+            ? "Your xAI login has expired. Sign in again — a browser window opens to authenticate. Shares the grok CLI login."
+            : "Sign in to connect your xAI account — a browser window opens to authenticate. Shares the grok CLI login, so this signs it in too."}</InfoTip></span>
+          <span className="key-status">{expired ? "○ login expired" : "○ not signed in"}</span>
+        </div>
+        <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
+          {loginBusy ? "Signing in…" : expired ? "Reconnect xAI" : "Sign in to xAI"}
+        </button>
+        {loginBusy && (
+          <span className="connect-sub" style={{ margin: "8px 0 0" }}>
+            A browser window will open to sign in at auth.x.ai…
+          </span>
+        )}
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+        {loginError && <p className="key-err">{loginError}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Grok CLI (<code>grok</code>)<InfoTip>
+          <p style={{ margin: "0 0 8px" }}>Reads the OAuth login the <strong>Grok CLI</strong> stores on this machine to show your real weekly quota.</p>
+          <p style={{ margin: "0", fontSize: "10.5px", color: "var(--faint)" }}>
+            An expired token is renewed in place automatically. Disconnecting signs the <code>grok</code> CLI out too — it shares this login.
+          </p>
+        </InfoTip></span>
+        <span className="key-status set">● connected</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+        {vendorStatus?.ok
+          ? vendorStatus.secondary
+          : (vendorStatus?.error ?? "Authenticated via Grok CLI.")}
       </span>
       <div style={{ marginTop: 8 }}>
         {confirmLogout ? (

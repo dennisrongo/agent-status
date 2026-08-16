@@ -11,7 +11,7 @@ use crate::process_util::SilentCommand;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
-use crate::vendors::{alibaba, anthropic, claude, copilot, glm, kimi, Detection, VendorReport, VendorStatus};
+use crate::vendors::{alibaba, anthropic, claude, copilot, glm, grok, kimi, Detection, VendorReport, VendorStatus};
 
 /// The user code + verification URL the UI shows during a Copilot device-flow
 /// connect. The device code itself stays server-side in `AppState`.
@@ -62,6 +62,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         alibaba_prev,
         alibaba_due,
         kimi_refresh_due,
+        grok_refresh_due,
         glm_week_cached,
         glm_week_due,
     ) = {
@@ -96,6 +97,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // a dead refresh token isn't retried on every collect tick.
         let kimi_refresh_due = guard.kimi_refresh_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::KIMI_REFRESH_MIN_SECS
+        });
+        let grok_refresh_due = guard.grok_refresh_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::GROK_REFRESH_MIN_SECS
         });
         // The z.ai 7-day usage chart pulls a week of hourly buckets — poll it
         // gently (GLM_WEEK_MIN_SECS) and serve the cached chart in between,
@@ -147,6 +151,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 .map(|v| v.alibaba.clone()),
             alibaba_due,
             kimi_refresh_due,
+            grok_refresh_due,
             guard.glm_week_last_good.clone().filter(|_| {
                 guard.glm_week_last_good_at.is_some_and(|t| {
                     (now - t).num_seconds() < crate::state::GLM_WEEK_CACHE_MAX_SECS
@@ -306,16 +311,29 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             tracing::warn!("kimi token auto-refresh failed: {e}");
         }
     }
+    // Grok access tokens last a few hours; the CLI only renews them while it
+    // runs. Renew an expired-by-clock login in place before the billing fetch
+    // re-reads auth.json (the CLI hot-reloads that file, so our rotation is
+    // race-safe with a running TUI).
+    let mut grok_refresh_attempted = false;
+    let grok_ts = grok::token_status(now);
+    if grok_ts.present && grok_ts.expired && grok_ts.has_refresh && grok_refresh_due {
+        grok_refresh_attempted = true;
+        if let Err(e) = grok::refresh(now).await {
+            tracing::warn!("grok token auto-refresh failed: {e}");
+        }
+    }
     // The 7-day chart shares `zai_key`/`glm_endpoint` with the quota fetch but
     // is separately throttled (its payload is week-sized); capture presence
     // before the join moves the key, and hand the week fetch its own clone.
     let zai_key_present = zai_key.is_some();
     let zai_key_week = zai_key.clone();
-    let (glm_status, glm_week_result, anthropic_status, kimi_status) = tokio::join!(
+    let (glm_status, glm_week_result, anthropic_status, kimi_status, grok_status) = tokio::join!(
         fetch_glm(zai_key, &glm_endpoint, now),
         fetch_glm_week(zai_key_week.as_ref(), &glm_endpoint, now, glm_week_due),
         fetch_anthropic(anthropic_key),
         kimi::fetch(now),
+        grok::fetch(now),
     );
     // z.ai 7-day chart: serve the fresh reading, else the age-bounded cache. A
     // failure with nothing cached simply hides the section — the quota card
@@ -405,6 +423,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // the user has the tool but hasn't signed in (the tab then shows the
         // sign-in hint rather than hiding entirely).
         kimi: kimi_status.configured || kimi::cli_on_path(),
+        grok: grok_status.configured
+            || grok::cli_on_path()
+            || snapshot.sessions.iter().any(|s| s.provider == "grok"),
         claude_signed_in: claude_ts.present,
         // "Expired" here means the login genuinely needs a manual reconnect — not
         // merely that the short-lived access token is past its clock. A live
@@ -424,6 +445,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         copilot: copilot_status,
         alibaba: alibaba_status,
         kimi: kimi_status,
+        grok: grok_status,
     });
 
     // z.ai activity rows for the Sessions tab: one per active hour from the
@@ -502,6 +524,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if kimi_refresh_attempted {
             guard.kimi_refresh_attempted_at = Some(now);
+        }
+        if grok_refresh_attempted {
+            guard.grok_refresh_attempted_at = Some(now);
         }
         // Cache a fresh z.ai 7-day reading; drop it (and reset the throttle)
         // when the key is gone so a stale chart can't outlive a sign-out.
@@ -854,7 +879,7 @@ pub fn set_tooltip_provider(
     provider: String,
 ) -> Result<SettingsView, String> {
     match provider.as_str() {
-        "claude" | "glm" | "copilot" | "alibaba" | "kimi" => {}
+        "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" => {}
         other => return Err(format!("unknown provider: {other}")),
     }
     let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
@@ -905,7 +930,7 @@ pub fn set_hidden_providers(
 ) -> Result<SettingsView, String> {
     for p in &providers {
         match p.as_str() {
-            "claude" | "glm" | "copilot" | "alibaba" | "kimi" => {}
+            "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" => {}
             other => return Err(format!("unknown provider: {other}")),
         }
     }
@@ -1440,6 +1465,62 @@ fn clear_kimi_throttle(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<Mutex<AppState>>();
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     guard.kimi_refresh_attempted_at = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn grok_cli_status() -> Result<grok::CliStatus, String> {
+    Ok(tokio::task::spawn_blocking(grok::cli_status)
+        .await
+        .map_err(|e| e.to_string())?)
+}
+
+/// Download the official Grok CLI into `$GROK_HOME/bin`. Blocking on the
+/// network; the UI shows a spinner. On success the refresh throttle is
+/// cleared and a background collect is kicked off so the xAI tab appears
+/// without waiting for the next tick.
+#[tauri::command]
+pub async fn install_grok_cli(app: AppHandle) -> Result<String, String> {
+    let msg = grok::install().await;
+    if msg.is_ok() {
+        clear_grok_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+/// Run `grok login` — the CLI's SpaceXAI OAuth browser flow. Blocking; the UI
+/// shows a spinner for the duration. On success the refresh throttle is
+/// cleared and a background collect is kicked off so the Grok card flips to
+/// connected without waiting for the next tick.
+#[tauri::command]
+pub async fn grok_cli_login(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(grok::login)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_grok_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+#[tauri::command]
+pub async fn grok_cli_logout(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(grok::logout)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_grok_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+fn clear_grok_throttle(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.grok_refresh_attempted_at = None;
     Ok(())
 }
 

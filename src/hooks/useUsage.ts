@@ -6,6 +6,7 @@ import type {
   BailianCliStatus,
   ClaudeLoginInfo,
   CopilotDeviceCode,
+  GrokCliStatus,
   KimiCliStatus,
   PlanKey,
   SettingsView,
@@ -53,6 +54,10 @@ export function useUsage() {
   const kimiStatusCmd = useTauriCommand<KimiCliStatus>("kimi_cli_status");
   const kimiLoginCmd = useTauriCommand<string>("kimi_cli_login");
   const kimiLogoutCmd = useTauriCommand<string>("kimi_cli_logout");
+  const grokStatusCmd = useTauriCommand<GrokCliStatus>("grok_cli_status");
+  const grokInstallCmd = useTauriCommand<string>("install_grok_cli");
+  const grokLoginCmd = useTauriCommand<string>("grok_cli_login");
+  const grokLogoutCmd = useTauriCommand<string>("grok_cli_logout");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -141,6 +146,26 @@ export function useUsage() {
   const logoutKimi = useCallback(
     () => kimiLogoutCmd.execute(),
     [kimiLogoutCmd],
+  );
+
+  const grokStatus = useCallback(
+    () => grokStatusCmd.execute(),
+    [grokStatusCmd],
+  );
+
+  const installGrok = useCallback(
+    () => grokInstallCmd.execute(),
+    [grokInstallCmd],
+  );
+
+  const loginGrok = useCallback(
+    () => grokLoginCmd.execute(),
+    [grokLoginCmd],
+  );
+
+  const logoutGrok = useCallback(
+    () => grokLogoutCmd.execute(),
+    [grokLogoutCmd],
   );
 
   const setPlan = useCallback(
@@ -359,6 +384,16 @@ export function useUsage() {
     logoutKimi,
     kimiLogoutBusy: kimiLogoutCmd.isLoading,
     kimiLogoutError: kimiLogoutCmd.error,
+    grokStatus,
+    installGrok,
+    grokInstallBusy: grokInstallCmd.isLoading,
+    grokInstallError: grokInstallCmd.error,
+    loginGrok,
+    grokLoginBusy: grokLoginCmd.isLoading,
+    grokLoginError: grokLoginCmd.error,
+    logoutGrok,
+    grokLogoutBusy: grokLogoutCmd.isLoading,
+    grokLogoutError: grokLogoutCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,

@@ -12,7 +12,7 @@ import { useAutoRotate } from "./hooks/useAutoRotate";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { generatedLabel, tileLabel } from "./format";
-import type { Glm, GlmWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
+import type { Glm, GlmWeek, GrokWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
 
@@ -77,12 +77,22 @@ export default function App() {
     logoutKimi,
     kimiLogoutBusy,
     kimiLogoutError,
+    grokStatus,
+    installGrok,
+    grokInstallBusy,
+    grokInstallError,
+    loginGrok,
+    grokLoginBusy,
+    grokLoginError,
+    logoutGrok,
+    grokLogoutBusy,
+    grokLogoutError,
     isLoading,
     error,
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
@@ -145,16 +155,18 @@ export default function App() {
   const showCopilot = snapshot?.detection?.copilot ?? false;
   const showAlibaba = snapshot?.detection?.alibaba ?? false;
   const showKimi = snapshot?.detection?.kimi ?? false;
+  const showGrok = snapshot?.detection?.grok ?? false;
   const hidden = new Set(settings?.hiddenProviders ?? []);
-  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi")[] = [
+  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
     ...(showAlibaba ? (["alibaba"] as const) : []),
     ...(showKimi ? (["kimi"] as const) : []),
+    ...(showGrok ? (["grok"] as const) : []),
   ];
   const visible = available.filter((p) => !hidden.has(p));
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi")[] = visible.length
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok")[] = visible.length
     ? visible
     : available.length
       ? available
@@ -203,6 +215,7 @@ export default function App() {
               <span className="boot-dot copilot" />
               <span className="boot-dot alibaba" />
               <span className="boot-dot kimi" />
+              <span className="boot-dot grok" />
             </div>
             <div className="boot-skel" aria-hidden="true">
               <div className="skel-kpis">
@@ -221,6 +234,7 @@ export default function App() {
 
   const { meta, limits, week, models, sessions, providers, glm, kpi } = snapshot;
   const glmWeek = snapshot.glmWeek;
+  const grokWeek = snapshot.grokWeek;
 
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
@@ -329,7 +343,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : "Moonshot"}
+                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : p === "kimi" ? "Moonshot" : "xAI"}
                   </button>
                 ))}
               </div>
@@ -445,6 +459,18 @@ export default function App() {
                 loginError={kimiLoginError}
               />
             )}
+
+            {eff === "grok" && (
+              <GrokOverview
+                vendor={snapshot.vendor?.grok}
+                grokWeek={grokWeek}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+                onLogin={() => void loginGrok()}
+                loginBusy={grokLoginBusy}
+                loginError={grokLoginError}
+              />
+            )}
               </>
             )}
           </section>
@@ -489,10 +515,10 @@ export default function App() {
             <div className="note">
               <InfoIcon />
               <p>
-                Activity spans every provider that keeps a local session log. Anthropic and
-                Moonshot record per-turn tokens (input, output and cache read/write);
-                Anthropic cost is estimated from standard-tier pricing, while Moonshot
-                bills a flat-rate plan. GitHub totals are written when a session ends, so a
+                Activity spans every provider that keeps a local session log. Anthropic,
+                Moonshot, and xAI record per-turn tokens when the CLI wrote billed usage;
+                Anthropic cost is estimated from standard-tier pricing, while Moonshot and
+                xAI bill a flat-rate plan. GitHub totals are written when a session ends, so a
                 running one shows —, and it meters premium requests rather than dollars.
                 Z.ai logs are server-lifecycle only; Alibaba has no local session
                 log — see the Providers tab for both.
@@ -558,6 +584,14 @@ export default function App() {
                   primary={vendorPrimary(snapshot.vendor?.kimi)}
                 />
               )}
+              {showGrok && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.grok)}
+                  name="xAI"
+                  meta={vendorMeta(snapshot.vendor?.grok, "sign in via the Grok CLI")}
+                  primary={vendorPrimary(snapshot.vendor?.grok)}
+                />
+              )}
             </div>
             <div className="note">
               <InfoIcon />
@@ -620,6 +654,17 @@ export default function App() {
             kimiLogoutBusy={kimiLogoutBusy}
             kimiLogoutError={kimiLogoutError}
             kimiVendorStatus={snapshot?.vendor?.kimi}
+            grokStatus={grokStatus}
+            installGrok={installGrok}
+            grokInstallBusy={grokInstallBusy}
+            grokInstallError={grokInstallError}
+            loginGrok={loginGrok}
+            grokLoginBusy={grokLoginBusy}
+            grokLoginError={grokLoginError}
+            logoutGrok={logoutGrok}
+            grokLogoutBusy={grokLogoutBusy}
+            grokLogoutError={grokLogoutError}
+            grokVendorStatus={snapshot?.vendor?.grok}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -1010,6 +1055,162 @@ function KimiOverview({
           <button className="btn primary" onClick={onConnect}>
             Setup guide →
           </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function GrokOverview({
+  vendor,
+  grokWeek,
+  minimal,
+  onConnect,
+  onLogin,
+  loginBusy,
+  loginError,
+}: {
+  vendor: VendorStatus | undefined;
+  grokWeek: GrokWeek | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+  onLogin: () => void;
+  loginBusy: boolean;
+  loginError: string | null;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+  const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
+  const hasLocal = Boolean(grokWeek && grokWeek.sessions > 0);
+
+  if (vendor?.authExpired && !hasLocal) {
+    return (
+      <div className="connect-card warn">
+        <p className="connect-title">xAI login expired</p>
+        <p className="connect-sub">
+          Sign in again to restore live quota — a browser window opens to
+          authenticate with xAI.
+        </p>
+        {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+        <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+          {loginBusy ? "Signing in…" : "Sign in to xAI"}
+        </button>
+        {loginError && <p className="key-err">{loginError}</p>}
+      </div>
+    );
+  }
+
+  if (!live && !hasLocal) {
+    return (
+      <div className="connect-card">
+        <p className="connect-title">
+          {vendor?.configured
+            ? `Couldn’t reach xAI${vendor.error ? `: ${vendor.error}` : ""}`
+            : "No xAI usage data yet"}
+        </p>
+        <p className="connect-sub">
+          Reads the Grok CLI&rsquo;s local session logs and xAI login. Sign in
+          from Settings if you have the CLI but no login yet.
+        </p>
+        <button className="btn primary" onClick={onConnect}>
+          Setup guide →
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {vendor?.authExpired && hasLocal && (
+        <div className="connect-card warn" style={{ marginBottom: 10 }}>
+          <p className="connect-title">xAI login expired</p>
+          <p className="connect-sub">
+            Local session totals still show below. Sign in again to restore the
+            live weekly window.
+          </p>
+          {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+          <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+            {loginBusy ? "Signing in…" : "Sign in to xAI"}
+          </button>
+          {loginError && <p className="key-err">{loginError}</p>}
+        </div>
+      )}
+      {windows.length > 0 ? (
+        <QuotaMeters windows={windows} />
+      ) : (
+        <div className="kpis" style={{ gridTemplateColumns: hasLocal ? "repeat(3, 1fr)" : "1fr" }}>
+          <div className="kpi">
+            <div className="k-label">Last 5 hours</div>
+            <div className="k-num">{grokWeek?.sessionTokens ?? "—"}</div>
+            <div className="k-sub">local spend</div>
+          </div>
+          {hasLocal && (
+            <>
+              <div className="kpi">
+                <div className="k-label">Last 7 days</div>
+                <div className="k-num">{grokWeek?.weekTokens ?? "—"}</div>
+                <div className="k-sub">{vendor?.secondary || "local logs"}</div>
+              </div>
+              <div className="kpi">
+                <div className="k-label">sessions</div>
+                <div className="k-num">{grokWeek?.sessions ?? 0}</div>
+                <div className="k-sub">{grokWeek?.last ? `last ${grokWeek.last}` : "local"}</div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {!minimal && grokWeek && grokWeek.days.length > 0 && (
+        <>
+          <div className="sec-head">
+            <h2>Last 7 days</h2>
+            <span className="meta">{grokWeek.weekTokens} tokens</span>
+          </div>
+          <WeekChart week={grokWeek.days} />
+          {grokWeek.models.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>By model</h2>
+                <span className="meta">last 7 days</span>
+              </div>
+              <div className="models">
+                {grokWeek.models.map((m) => (
+                  <div className="model-row" key={m.key}>
+                    <span className="name">{m.name}</span>
+                    <div className="mtrack">
+                      <div className="mfill" style={{ width: `${m.pct}%`, background: "var(--grok)" }} />
+                    </div>
+                    <span className="mval">
+                      <b>{m.tokens}</b>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {!minimal && (facts.length > 0 || live) && (
+        <div className="budget" style={{ marginTop: 9 }}>
+          {facts.map((d, i) => (
+            <div className="budget-foot" key={`${d.label}-${i}`} style={i === 0 ? { marginTop: 0 } : undefined}>
+              <span className="used">{d.label}</span>
+              <span className="rem">{d.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!minimal && (
+        <div className="note">
+          <InfoIcon />
+          <p>
+            Token counts come from local Grok CLI session logs. Grok Build
+            bills a weekly pool — there is no 5-hour session quota like
+            Claude. The live line is that weekly window, not a % meter.
+          </p>
         </div>
       )}
     </>

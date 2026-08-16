@@ -141,6 +141,10 @@ pub fn run() {
             commands::kimi_cli_status,
             commands::kimi_cli_login,
             commands::kimi_cli_logout,
+            commands::grok_cli_status,
+            commands::install_grok_cli,
+            commands::grok_cli_login,
+            commands::grok_cli_logout,
             commands::open_url,
             commands::restart_after_update,
         ])

@@ -68,7 +68,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
-  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi";
+  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok";
   /** Pre-rendered by Rust — "1.2M", or "—" when the provider records no count. */
   tokensText: string;
   /** Pre-rendered by Rust — dollars, premium requests, or "—". */
@@ -119,6 +119,7 @@ export interface VendorReport {
   copilot: VendorStatus;
   alibaba: VendorStatus;
   kimi: VendorStatus;
+  grok: VendorStatus;
 }
 
 /** z.ai "Last 7 days" view, fetched from the monitor `model-usage` endpoint.
@@ -131,12 +132,26 @@ export interface GlmWeek {
   totalCalls: string;
 }
 
+/** Local Grok CLI token totals for the xAI Overview. SuperGrok has no
+ *  public % ceiling, so this is the real usage the tab can show. */
+export interface GrokWeek {
+  days: WeekDay[];
+  models: ModelRow[];
+  /** Tokens in the last 5 hours — local spend, not a vendor quota. */
+  sessionTokens: string;
+  weekTokens: string;
+  totalTokens: string;
+  sessions: number;
+  last: string;
+}
+
 export interface Detection {
   claude: boolean;
   glm: boolean;
   copilot: boolean;
   alibaba: boolean;
   kimi: boolean;
+  grok: boolean;
   /** A Claude Code OAuth login is present on this machine (independent of the
    * live toggle). Drives the connect/disconnect control. */
   claudeSignedIn: boolean;
@@ -157,6 +172,8 @@ export interface UsageSnapshot {
   vendor?: VendorReport;
   /** Present once a z.ai key is set and the 7-day usage fetch has succeeded. */
   glmWeek?: GlmWeek;
+  /** Present when local Grok CLI session logs were found. */
+  grokWeek?: GrokWeek;
   detection?: Detection;
 }
 
@@ -184,6 +201,11 @@ export interface KimiCliStatus {
   authenticated: boolean;
 }
 
+export interface GrokCliStatus {
+  installed: boolean;
+  authenticated: boolean;
+}
+
 /** Device-flow details pushed via the `kimi-login-device` event while a
  * `kimi login` is in flight — the Settings UI shows the code so the user can
  * complete the login even if the browser didn't open. */
@@ -194,7 +216,7 @@ export interface KimiDeviceLogin {
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi";
+export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok";
 
 export type WindowMode = "dock" | "float";
 

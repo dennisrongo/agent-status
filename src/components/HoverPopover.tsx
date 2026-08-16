@@ -16,7 +16,7 @@ const WIDTH = 300;
  * Compact preview of one provider's usage, shown in its own borderless window
  * when the cursor hovers the tray icon. Listens for the same `usage-updated`
  * broadcast the main window uses, plus a `hover-provider` event that tells it
- * which provider (Anthropic, Z.ai, GitHub, Alibaba, or Moonshot) to show. Fits its window to the rendered
+ * which provider (Anthropic, Z.ai, GitHub, Alibaba, Moonshot, or xAI) to show. Fits its window to the rendered
  * content so spacing is controlled by CSS rather than the OS tooltip.
  */
 export function HoverPopover() {
@@ -41,7 +41,7 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi")
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi" || e.payload === "grok")
             setProvider(e.payload);
         }),
       );
@@ -114,6 +114,62 @@ function HoverContent({
         errorLead="Couldn't read Moonshot usage"
       />
     );
+  if (provider === "grok") {
+    const gw = snapshot.grokWeek;
+    const vendor = snapshot.vendor?.grok;
+    const hasMeter = Boolean(vendor?.detail.some((d) => d.pct != null));
+    const hasLocal = Boolean(gw && gw.sessions > 0);
+    const live = Boolean(vendor?.configured && vendor.ok);
+    const expired = Boolean(vendor?.authExpired);
+    const meters = (
+      <VendorMeters
+        vendor={vendor}
+        srcLabel="xAI"
+        setupHint="Sign in to xAI (grok login) to see quota."
+        errorLead="Couldn't read xAI usage"
+      />
+    );
+    if (hasMeter) return meters;
+    if (gw && hasLocal) {
+      return (
+        <>
+          <Head src={live ? "live · xAI" : "xAI"} />
+          {expired && (
+            <div className="hp-status warn">xAI login expired — reconnect in the app.</div>
+          )}
+          <div className="hp-rows">
+            <div className="hp-kv">
+              <span className="hp-kv-label">Last 5 hours</span>
+              <span className="hp-kv-val">{gw.sessionTokens}</span>
+            </div>
+            <div className="hp-kv">
+              <span className="hp-kv-label">7-day tokens</span>
+              <span className="hp-kv-val">{gw.weekTokens}</span>
+            </div>
+            <div className="hp-kv">
+              <span className="hp-kv-label">sessions</span>
+              <span className="hp-kv-val">{gw.sessions}</span>
+            </div>
+          </div>
+        </>
+      );
+    }
+    if (live) return meters;
+    if (expired) {
+      return (
+        <>
+          <Head src="xAI" />
+          <div className="hp-status warn">xAI login expired — reconnect in the app.</div>
+        </>
+      );
+    }
+    return (
+      <>
+        <Head src="xAI" />
+        <div className="hp-status">Sign in to xAI (grok login) to see usage.</div>
+      </>
+    );
+  }
   return <ClaudeContent snapshot={snapshot} />;
 }
 

@@ -7,6 +7,7 @@
 //! | Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | exact, per turn |
 //! | Copilot CLI | `~/.copilot/session-state/*/events.jsonl` | totals at shutdown only |
 //! | GLM / z.ai | `~/.zai/*.log` | none — server lifecycle only |
+//! | Grok Build | `~/.grok/sessions/**/summary.json` + `updates.jsonl` | per-turn when billed usage was recorded |
 //!
 //! Alibaba has no local coding-session log at all (the `bl` CLI is a one-shot
 //! API client), so it contributes vendor-side quota but no rows.
@@ -48,6 +49,11 @@ pub struct UsageSnapshot {
     /// `vendor.glm`, which carries the quota windows only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub glm_week: Option<crate::vendors::glm::GlmWeek>,
+    /// Local Grok CLI token totals (7-day chart + per-model), built from
+    /// session logs. SuperGrok has no public % ceiling, so this is the real
+    /// usage the Overview can show.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grok_week: Option<GrokWeek>,
     /// Which providers are present locally, filled in by the command layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detection: Option<crate::vendors::Detection>,
@@ -178,6 +184,21 @@ pub struct Glm {
     pub active_days: usize,
     pub last: String,
     pub note: String,
+}
+
+/// Local Grok CLI usage for the xAI Overview. `cost_fmt` on each day is
+/// unused (flat-rate plan) and left as an em dash.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokWeek {
+    pub days: Vec<WeekDay>,
+    pub models: Vec<ModelRow>,
+    /// Tokens in the last 5 hours — local spend, not a vendor quota window.
+    pub session_tokens: String,
+    pub week_tokens: String,
+    pub total_tokens: String,
+    pub sessions: usize,
+    pub last: String,
 }
 
 // ---------- Internal record ----------
@@ -370,21 +391,28 @@ pub struct ScanRoots {
     pub kimi: PathBuf,
     /// `~/.copilot` — GitHub Copilot CLI session state.
     pub copilot: PathBuf,
+    /// `$GROK_HOME` (default `~/.grok`) — Grok Build session store.
+    pub grok: PathBuf,
 }
 
 impl ScanRoots {
     /// Resolve every root under a home directory, honoring `$KIMI_CODE_HOME`
-    /// the same way [`crate::vendors::kimi`] does.
+    /// and `$GROK_HOME` the same way the matching vendor clients do.
     pub fn for_home(home: &Path) -> Self {
         let kimi = std::env::var_os("KIMI_CODE_HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".kimi-code"));
+        let grok = std::env::var_os("GROK_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".grok"));
         Self {
             claude: home.join(".claude").join("projects"),
             zai: home.join(".zai"),
             kimi,
             copilot: home.join(".copilot"),
+            grok,
         }
     }
 }
@@ -711,13 +739,21 @@ fn build_snapshot(
         ));
     }
 
-    // ---- Kimi Code & Copilot ----
+    // ---- Kimi Code, Copilot, Grok ----
     let kimi = scan_kimi(roots.kimi.as_path());
     let copilot = scan_copilot(roots.copilot.as_path());
+    let (grok, grok_turns) = scan_grok(roots.grok.as_path(), now);
     let kimi_total = ProviderTotals::of(&kimi);
     let copilot_total = ProviderTotals::of(&copilot);
+    let grok_total = ProviderTotals::of(&grok);
+    let grok_week = if grok.is_empty() {
+        None
+    } else {
+        Some(build_grok_week(&grok, &grok_turns, now))
+    };
     rows.extend(kimi);
     rows.extend(copilot);
+    rows.extend(grok);
 
     // Newest first, then assign humanized `when` from the ordering instant —
     // and carry the instant itself, so vendor-sourced rows appended by the
@@ -777,6 +813,19 @@ fn build_snapshot(
             sessions: copilot_total.sessions,
         });
     }
+    if grok_total.sessions > 0 {
+        providers.push(Provider {
+            name: "xAI".to_string(),
+            status: "connected".to_string(),
+            tokens: if grok_total.tokens > 0 {
+                fmt_tokens(grok_total.tokens as f64)
+            } else {
+                EM_DASH.to_string()
+            },
+            cost: EM_DASH.to_string(),
+            sessions: grok_total.sessions,
+        });
+    }
 
     let kpi = Kpi {
         session_tokens: fmt_tokens(s_used as f64),
@@ -800,6 +849,7 @@ fn build_snapshot(
         // z.ai 7-day usage chart — filled in by the command layer after a live
         // fetch, like `vendor`/`detection` (the scanner sees no z.ai data).
         glm_week: None,
+        grok_week,
         detection: None,
     }
 }
@@ -1097,6 +1147,352 @@ fn copilot_shutdown_tokens(data: &Value) -> Option<u64> {
         total += d["tokenCount"].as_u64().unwrap_or(0);
     }
     Some(total)
+}
+
+// ---------- Grok Build ----------
+
+/// Read the most-recent Grok Build sessions from `$GROK_HOME/sessions`.
+///
+/// Layout is `<root>/sessions/<encoded-cwd>/<session-id>/summary.json` plus an
+/// append-only `updates.jsonl`. Metadata (cwd, model, timestamps) comes from
+/// the summary; billed tokens only appear on per-turn `usage` objects that
+/// carry `input_tokens` / `inputTokens`. Bare `_meta.totalTokens` is the
+/// context-window size and must not be treated as spend — a session without
+/// billed usage reports `—`, matching Copilot's in-progress rows.
+///
+/// Grok Build is a flat-rate subscription, so the cost column is always `—`.
+///
+/// Also returns per-turn `(at, tokens, model)` records so the Overview can
+/// draw a 7-day chart — SuperGrok publishes no % ceiling, so local tokens
+/// are the real usage figure. Session *rows* stay capped at
+/// [`MAX_PROVIDER_ROWS`]; week/5h turns are read from every session whose
+/// summary time falls in the last 7 days so the chart is not “newest 25”.
+fn scan_grok(
+    root: &Path,
+    now: DateTime<Utc>,
+) -> (Vec<(DateTime<Utc>, SessionRow)>, Vec<(DateTime<Utc>, u64, String)>) {
+    let pattern = format!("{}/sessions/*/*/summary.json", root.to_string_lossy());
+    let summaries: Vec<PathBuf> = match glob::glob(&pattern) {
+        Ok(p) => p.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    };
+
+    let mut candidates: Vec<(DateTime<Utc>, PathBuf, Value)> = Vec::new();
+    for sp in &summaries {
+        let Ok(raw) = std::fs::read_to_string(sp) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+        let last = grok_summary_time(&v);
+        let Some(last) = last else { continue };
+        let Some(dir) = sp.parent() else { continue };
+        candidates.push((last, dir.to_path_buf(), v));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let cut_7d = now - Duration::days(7);
+    let mut rows = Vec::new();
+    let mut turns: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
+    for (i, (updated, dir, summary)) in candidates.iter().enumerate() {
+        let for_row = i < MAX_PROVIDER_ROWS;
+        let for_week = *updated >= cut_7d;
+        if !for_row && !for_week {
+            continue;
+        }
+        let id = summary
+            .pointer("/info/id")
+            .and_then(|v| v.as_str())
+            .or_else(|| summary.get("id").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let cwd = summary
+            .pointer("/info/cwd")
+            .and_then(|v| v.as_str())
+            .or_else(|| summary.get("cwd").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let model = summary
+            .get("current_model_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let events = read_grok_usage(dir, *updated, &model);
+        let tokens: u64 = events.iter().map(|e| e.1).sum();
+        let usage_last = events.iter().map(|e| e.0).max();
+        let last = usage_last.unwrap_or(*updated);
+        turns.extend(events);
+        if !for_row {
+            continue;
+        }
+        rows.push((
+            last,
+            SessionRow {
+                id: grok_short_id(id, dir),
+                project: project_from_cwd(cwd),
+                model,
+                tokens,
+                cost: 0.0,
+                when: String::new(),
+                at: None,
+                provider: "grok".to_string(),
+                tokens_text: if tokens > 0 {
+                    fmt_tokens(tokens as f64)
+                } else {
+                    EM_DASH.to_string()
+                },
+                cost_text: EM_DASH.to_string(),
+            },
+        ));
+    }
+    (rows, turns)
+}
+
+fn build_grok_week(
+    rows: &[(DateTime<Utc>, SessionRow)],
+    turns: &[(DateTime<Utc>, u64, String)],
+    now: DateTime<Utc>,
+) -> GrokWeek {
+    let cut_5h = now - Duration::hours(5);
+    let cut_7d = now - Duration::days(7);
+    let mut day_tokens: HashMap<String, u64> = HashMap::new();
+    let mut model_tokens: HashMap<String, u64> = HashMap::new();
+    let mut session_tokens = 0u64;
+    let mut week_tokens = 0u64;
+    let mut total_tokens = 0u64;
+    for (at, n, model) in turns {
+        total_tokens = total_tokens.saturating_add(*n);
+        if *at >= cut_5h {
+            session_tokens = session_tokens.saturating_add(*n);
+        }
+        if *at >= cut_7d {
+            week_tokens = week_tokens.saturating_add(*n);
+            let key = at.format("%Y-%m-%d").to_string();
+            *day_tokens.entry(key).or_insert(0) += *n;
+            if !model.is_empty() {
+                *model_tokens.entry(model.clone()).or_insert(0) += *n;
+            }
+        }
+    }
+    // Sessions with no billed turns still count toward the session total,
+    // but they don't move the day/model charts.
+    let today = now.date_naive();
+    let mut week_max = 1u64;
+    let mut days: Vec<WeekDay> = Vec::with_capacity(7);
+    for i in (0..7).rev() {
+        let d = today - chrono::Days::new(i);
+        let key = d.format("%Y-%m-%d").to_string();
+        let toks = *day_tokens.get(&key).unwrap_or(&0);
+        week_max = week_max.max(toks);
+        days.push(WeekDay {
+            day: weekday_abbr(d.weekday().num_days_from_monday()),
+            date: key,
+            tok_fmt: fmt_tokens(toks as f64),
+            cost_fmt: EM_DASH.to_string(),
+            bar_pct: 0,
+        });
+    }
+    for w in days.iter_mut() {
+        let toks = day_tokens.get(&w.date).copied().unwrap_or(0);
+        w.bar_pct = ((toks as f64 / week_max as f64) * 100.0).round() as u32;
+    }
+
+    let grand = week_tokens.max(1);
+    let mut model_pairs: Vec<(String, u64)> = model_tokens.into_iter().collect();
+    model_pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let models: Vec<ModelRow> = model_pairs
+        .into_iter()
+        .map(|(name, t)| ModelRow {
+            key: name.clone(),
+            name,
+            tokens: fmt_tokens(t as f64),
+            cost: EM_DASH.to_string(),
+            pct: ((t as f64 / grand as f64) * 100.0).round() as u32,
+        })
+        .collect();
+
+    let last = rows
+        .iter()
+        .map(|(dt, _)| *dt)
+        .max()
+        .map(|dt| humanize_when(dt, now))
+        .unwrap_or_else(|| EM_DASH.to_string());
+
+    GrokWeek {
+        days,
+        models,
+        session_tokens: if session_tokens > 0 {
+            fmt_tokens(session_tokens as f64)
+        } else {
+            EM_DASH.to_string()
+        },
+        week_tokens: if week_tokens > 0 {
+            fmt_tokens(week_tokens as f64)
+        } else {
+            EM_DASH.to_string()
+        },
+        total_tokens: if total_tokens > 0 {
+            fmt_tokens(total_tokens as f64)
+        } else {
+            EM_DASH.to_string()
+        },
+        sessions: rows.len(),
+        last,
+    }
+}
+
+fn grok_summary_time(v: &Value) -> Option<DateTime<Utc>> {
+    for key in ["last_active_at", "updated_at", "created_at"] {
+        if let Some(s) = v.get(key).and_then(|t| t.as_str()) {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                return Some(dt.with_timezone(&Utc));
+            }
+        }
+    }
+    None
+}
+
+/// Sum billed per-turn usage from `updates.jsonl` (and `signals.json` if
+/// present). Only objects that carry an `input_tokens` / `inputTokens` field
+/// count — that's the spend shape. Context-window `totalTokens` is ignored.
+fn read_grok_usage(
+    session_dir: &Path,
+    fallback_at: DateTime<Utc>,
+    fallback_model: &str,
+) -> Vec<(DateTime<Utc>, u64, String)> {
+    let mut events: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
+
+    let updates = session_dir.join("updates.jsonl");
+    for line in read_lines(&updates) {
+        if !(line.contains("\"input_tokens\"") || line.contains("\"inputTokens\"")) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let parts = grok_line_events(&v, fallback_model);
+        if parts.is_empty() {
+            continue;
+        }
+        let at = grok_update_time(&v).unwrap_or(fallback_at);
+        for (n, model) in parts {
+            events.push((at, n, model));
+        }
+    }
+    // signals.json is a session-end roll-up. Prefer the per-turn updates so a
+    // running session (no signals file yet) still counts, and so we don't
+    // double-count a completed one.
+    if events.is_empty() {
+        if let Some((t, at)) = read_grok_signals(&session_dir.join("signals.json")) {
+            events.push((at.unwrap_or(fallback_at), t, fallback_model.to_string()));
+        }
+    }
+    events
+}
+
+fn read_grok_signals(path: &Path) -> Option<(u64, Option<DateTime<Utc>>)> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    let n = grok_turn_tokens(&v)
+        .or_else(|| {
+            v.get("tokens_used")
+                .or_else(|| v.get("tokensUsed"))
+                .and_then(|t| t.as_u64())
+                .filter(|&n| n > 0)
+        })?;
+    Some((n, None))
+}
+
+/// Pull billed tokens from a usage object. Requires an input-token field so
+/// a context-window `totalTokens` (present on every stream chunk) can't be
+/// mistaken for spend.
+fn grok_turn_tokens(v: &Value) -> Option<u64> {
+    let parts = grok_line_events(v, "");
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.iter().map(|(n, _)| *n).sum())
+    }
+}
+
+/// One JSONL line may split spend across `modelUsage` keys (the CLI's
+/// `turn_completed` shape). Fall back to a single total + the session model.
+fn grok_line_events(v: &Value, fallback_model: &str) -> Vec<(u64, String)> {
+    let candidates = [
+        v.get("usage"),
+        v.pointer("/params/update/usage"),
+        v.pointer("/params/_meta/usage"),
+        v.get("_meta").and_then(|m| m.get("usage")),
+        Some(v),
+    ];
+    for u in candidates.into_iter().flatten() {
+        if let Some(map) = u
+            .get("modelUsage")
+            .or_else(|| u.get("model_usage"))
+            .and_then(|m| m.as_object())
+        {
+            let mut out = Vec::new();
+            for (name, mu) in map {
+                if let Some(n) = grok_usage_token_sum(mu) {
+                    let short = name.rsplit('/').next().unwrap_or(name).to_string();
+                    out.push((n, short));
+                }
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+        if let Some(n) = grok_usage_token_sum(u) {
+            return vec![(n, fallback_model.to_string())];
+        }
+    }
+    Vec::new()
+}
+
+fn grok_usage_token_sum(u: &Value) -> Option<u64> {
+    let input = u
+        .get("input_tokens")
+        .or_else(|| u.get("inputTokens"))
+        .and_then(|x| x.as_u64())?;
+    let output = u
+        .get("output_tokens")
+        .or_else(|| u.get("outputTokens"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    // Anthropic-style cache fields only. Grok's `cachedReadTokens` is already
+    // included in `inputTokens` — adding it would double-count.
+    let cache_r = u
+        .get("cache_read_input_tokens")
+        .or_else(|| u.get("cacheReadInputTokens"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let cache_c = u
+        .get("cache_creation_input_tokens")
+        .or_else(|| u.get("cacheCreationInputTokens"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    Some(input + output + cache_r + cache_c)
+}
+
+fn grok_update_time(v: &Value) -> Option<DateTime<Utc>> {
+    if let Some(ms) = v
+        .pointer("/params/_meta/agentTimestampMs")
+        .or_else(|| v.pointer("/_meta/agentTimestampMs"))
+        .and_then(|t| t.as_i64())
+    {
+        return DateTime::from_timestamp_millis(ms);
+    }
+    if let Some(secs) = v.get("timestamp").and_then(|t| t.as_i64()) {
+        return DateTime::from_timestamp(secs, 0);
+    }
+    None
+}
+
+fn grok_short_id(id: &str, dir: &Path) -> String {
+    let raw = if id.is_empty() {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        id.to_string()
+    };
+    raw.chars().take(8).collect()
 }
 
 // ---------- Shared helpers ----------
@@ -1871,6 +2267,7 @@ mod tests {
             zai: kimi.join("__no_zai__"),
             kimi: kimi.to_path_buf(),
             copilot: copilot.to_path_buf(),
+            grok: kimi.join("__no_grok__"),
         }
     }
 
@@ -2112,7 +2509,7 @@ mod tests {
             &[r#"{"type":"session.start","data":{"selectedModel":"claude-opus-4.7","context":{"cwd":"/tmp/cproj"}},"timestamp":"2026-06-17T17:00:00.000Z"}"#],
         );
 
-        let snap = scan_roots(&ScanRoots { claude, zai, kimi, copilot }, "max5x", now);
+        let snap = scan_roots(&ScanRoots { claude, zai, kimi, copilot, grok: tmp.path().join("nogrok") }, "max5x", now);
         let order: Vec<&str> = snap.sessions.iter().map(|s| s.provider.as_str()).collect();
         assert_eq!(order, vec!["claude", "kimi", "copilot"]);
 
@@ -2134,6 +2531,7 @@ mod tests {
                 zai: tmp.path().join("nope"),
                 kimi: tmp.path().join("nope"),
                 copilot: tmp.path().join("nope"),
+                grok: tmp.path().join("nope"),
             },
             "pro",
             now,
@@ -2172,5 +2570,232 @@ mod tests {
         assert_eq!(trim_float(7.0), "7");
         assert_eq!(trim_float(7.5), "7.5");
         assert_eq!(trim_float(0.0), "0");
+    }
+
+    // ── Grok Build session store ──
+
+    fn write_grok_session(
+        grok: &Path,
+        cwd_enc: &str,
+        id: &str,
+        summary: &str,
+        updates: &[&str],
+    ) {
+        let dir = grok.join("sessions").join(cwd_enc).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("summary.json"), summary).unwrap();
+        let mut f = std::fs::File::create(dir.join("updates.jsonl")).unwrap();
+        for l in updates {
+            writeln!(f, "{l}").unwrap();
+        }
+    }
+
+    fn grok_usage_line(input: u64, output: u64, ts: i64) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","usage":{{"input_tokens":{input},"output_tokens":{output},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}}}"#
+        )
+    }
+
+    fn grok_roots(grok: &Path) -> ScanRoots {
+        ScanRoots {
+            claude: grok.join("__no_claude__"),
+            zai: grok.join("__no_zai__"),
+            kimi: grok.join("__no_kimi__"),
+            copilot: grok.join("__no_copilot__"),
+            grok: grok.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn grok_session_sums_billed_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_grok_session(
+            &grok,
+            "C%3A%5Cproj",
+            "01a00bbe-460b-7cc0-b3c7-3f1326845eba",
+            r#"{"info":{"id":"01a00bbe-460b-7cc0-b3c7-3f1326845eba","cwd":"C:\\Users\\denni\\Documents\\GitHub\\agent-status"},"current_model_id":"grok-4.6","updated_at":"2026-08-16T19:30:00Z","last_active_at":"2026-08-16T19:30:00Z"}"#,
+            &[
+                &grok_usage_line(1000, 200, 1_786_903_800),
+                // Context-window totalTokens must not be counted as spend.
+                r#"{"timestamp":1786903801,"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk"},"_meta":{"totalTokens":88009}}}"#,
+                &grok_usage_line(500, 100, 1_786_904_000),
+            ],
+        );
+
+        let snap = scan_roots(&grok_roots(&grok), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        let row = &snap.sessions[0];
+        assert_eq!(row.provider, "grok");
+        assert_eq!(row.project, "agent-status");
+        assert_eq!(row.model, "grok-4.6");
+        assert_eq!(row.tokens, 1800);
+        assert_eq!(row.tokens_text, "2K");
+        assert_eq!(row.cost_text, "—");
+        assert_eq!(row.id, "01a00bbe");
+        assert!(snap.providers.iter().any(|p| p.name == "xAI"));
+        let week = snap.grok_week.expect("local xAI week stats");
+        assert_eq!(week.sessions, 1);
+        assert_eq!(week.total_tokens, "2K");
+        assert_eq!(week.week_tokens, "2K");
+        assert_eq!(week.session_tokens, "2K");
+        assert_eq!(week.days.len(), 7);
+        assert!(week.models.iter().any(|m| m.name == "grok-4.6" && m.tokens == "2K"));
+    }
+
+    #[test]
+    fn grok_session_without_billed_usage_reports_em_dash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_grok_session(
+            &grok,
+            "home",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            r#"{"info":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/fresh"},"current_model_id":"grok-4.6","updated_at":"2026-08-16T19:00:00Z"}"#,
+            &[r#"{"timestamp":1786903200,"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk"},"_meta":{"totalTokens":19786}}}"#],
+        );
+        let snap = scan_roots(&grok_roots(&grok), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        assert_eq!(snap.sessions[0].tokens, 0);
+        assert_eq!(snap.sessions[0].tokens_text, "—");
+    }
+
+    fn grok_turn_completed(input: u64, output: u64, ts: i64, model: &str) -> String {
+        let mut model_usage = serde_json::Map::new();
+        model_usage.insert(
+            model.to_string(),
+            serde_json::json!({ "inputTokens": input, "outputTokens": output }),
+        );
+        serde_json::json!({
+            "timestamp": ts,
+            "method": "_x.ai/session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "turn_completed",
+                    "usage": {
+                        "inputTokens": input,
+                        "outputTokens": output,
+                        "totalTokens": input + output,
+                        "cachedReadTokens": input / 2,
+                        "cacheCreationTokens": 0,
+                        "modelUsage": serde_json::Value::Object(model_usage)
+                    }
+                }
+            },
+            "_meta": { "agentTimestampMs": ts * 1000 }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn grok_turn_completed_camelcase_is_billed_spend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = (now - Duration::hours(1)).timestamp();
+        write_grok_session(
+            &grok,
+            "proj",
+            "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+            r#"{"info":{"id":"bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/p"},"current_model_id":"grok-4.6","last_active_at":"2026-08-16T19:00:00Z"}"#,
+            &[&grok_turn_completed(1000, 200, ts, "grok-4.6-build")],
+        );
+        let snap = scan_roots(&grok_roots(&grok), "max5x", now);
+        assert_eq!(snap.sessions[0].tokens, 1200);
+        let week = snap.grok_week.expect("week");
+        assert!(
+            week.models.iter().any(|m| m.name == "grok-4.6-build" && m.tokens == "1K"),
+            "got {:?}",
+            week.models
+        );
+    }
+
+    #[test]
+    fn grok_week_cuts_5h_and_7d() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_grok_session(
+            &grok,
+            "proj",
+            "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee",
+            r#"{"info":{"id":"cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/p"},"current_model_id":"grok-4.6","last_active_at":"2026-08-16T19:00:00Z"}"#,
+            &[
+                &grok_usage_line(1000, 0, (now - Duration::hours(2)).timestamp()),
+                &grok_usage_line(2000, 0, (now - Duration::hours(6)).timestamp()),
+                &grok_usage_line(4000, 0, (now - Duration::days(8)).timestamp()),
+            ],
+        );
+        let week = scan_roots(&grok_roots(&grok), "max5x", now)
+            .grok_week
+            .expect("week");
+        assert_eq!(week.session_tokens, "1K");
+        assert_eq!(week.week_tokens, "3K");
+        assert_eq!(week.total_tokens, "7K");
+        assert!(
+            week.models.iter().any(|m| m.name == "grok-4.6" && m.tokens == "3K"),
+            "7d model mix must exclude the 8-day-old turn, got {:?}",
+            week.models
+        );
+    }
+
+    #[test]
+    fn grok_untimed_spend_uses_session_last_active() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_grok_session(
+            &grok,
+            "old",
+            "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee",
+            r#"{"info":{"id":"dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/old"},"current_model_id":"grok-4.6","last_active_at":"2026-08-08T20:00:00Z"}"#,
+            &[r#"{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","usage":{"inputTokens":9000,"outputTokens":0}}}}"#],
+        );
+        let week = scan_roots(&grok_roots(&grok), "max5x", now)
+            .grok_week
+            .expect("week");
+        assert_eq!(week.session_tokens, "—");
+        assert_eq!(week.week_tokens, "—");
+        assert_eq!(week.total_tokens, "9K");
+    }
+
+    #[test]
+    fn grok_week_includes_sessions_past_the_row_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok = tmp.path().join("grok");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ts = (now - Duration::hours(1)).timestamp();
+        let summary_at = "2026-08-16T19:00:00Z";
+        for i in 0..26 {
+            let id = format!("eeeeeeee-bbbb-cccc-dddd-eeeeeeeeee{i:02}");
+            write_grok_session(
+                &grok,
+                "many",
+                &id,
+                &format!(
+                    r#"{{"info":{{"id":"{id}","cwd":"/tmp/many"}},"current_model_id":"grok-4.6","last_active_at":"{summary_at}"}}"#
+                ),
+                &[&grok_usage_line(1000, 0, ts)],
+            );
+        }
+        let snap = scan_roots(&grok_roots(&grok), "max5x", now);
+        assert_eq!(snap.sessions.len(), MAX_PROVIDER_ROWS);
+        let week = snap.grok_week.expect("week");
+        assert_eq!(week.week_tokens, "26K");
+        assert_eq!(week.sessions, MAX_PROVIDER_ROWS);
     }
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Anthropic, Z.ai, GitHub, Alibaba, Moonshot). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
+A macOS (and Windows) **menubar widget** built with Tauri 2 that tracks AI coding agent usage across multiple providers (Anthropic, Z.ai, GitHub, Alibaba, Moonshot, xAI). It reads local CLI session logs, optionally fetches live vendor quota data, and renders limits, token spend, cost estimates, and per-session history in a click-to-toggle dropdown window. Menubar-only (`LSUIElement` / `skipTaskbar`), single-instance, launch-at-login, self-updating via the Tauri updater.
 
 ## Commands
 
@@ -61,7 +61,7 @@ Never ask for or set a signing password — there isn't one. If a future release
 src/ (React)                         src-tauri/src/ (Rust)
   hooks/useUsage ─── invoke ───────▶ commands/usage.rs ── collect()
   hooks/useTauriCommand              scanner/   logs → UsageSnapshot
-  components/Meter,WeekChart,…       vendors/   claude·glm·anthropic·copilot·alibaba·kimi
+  components/Meter,WeekChart,…       vendors/   claude·glm·anthropic·copilot·alibaba·kimi·grok
   renders snapshot  ◀── event ────── encryption/ settings/ state/ storage/
                   "usage-updated"    tray.rs    menubar icon + dropdown
                                        ▲ lib.rs: background timer loop
@@ -73,7 +73,7 @@ src/ (React)                         src-tauri/src/ (Rust)
 
 1. Scan local logs off the async runtime via `spawn_blocking` (`scanner::scan_default`) → a base `UsageSnapshot` with **estimated** Claude meters and the cross-provider Sessions list.
 2. Optionally overwrite the Claude meters with **live** `/usage` data (`vendors::claude::fetch`).
-3. Fetch live GLM / Anthropic / Copilot / Kimi vendor status (network, async).
+3. Fetch live GLM / Anthropic / Copilot / Kimi / Grok vendor status (network, async).
 4. Compute `Detection` (which provider tabs to show) and attach the `VendorReport`.
 5. Cache the merged snapshot in `AppState` and return it.
 
@@ -91,6 +91,7 @@ src/ (React)                         src-tauri/src/ (Rust)
 `scanner::scan_roots` takes a `ScanRoots` (one path per provider) and merges session rows from every CLI that keeps a local log — see the table in the `scanner` module doc. The formats are not equivalent, and the differences are load-bearing:
 
 - **Claude** and **Kimi** record per-turn token usage, so their rows are exact. Kimi splits usage across `agents/*/wire.jsonl` (main loop + one file per subagent), each turn recorded exactly once, so summing across agents is correct and summing anything else double-counts.
+- **Grok / xAI** records billed spend on `turn_completed` usage objects (`inputTokens` / `outputTokens`, optionally split by `modelUsage`). Bare `_meta.totalTokens` is the context-window size and must not be counted. A session without billed usage reports `—`. Week/5h totals read every session active in the last 7 days; the Sessions list is still capped at `MAX_PROVIDER_ROWS`. Honor `$GROK_HOME` (default `~/.grok`).
 - **Copilot** writes totals only in `session.shutdown`. A running session has none — that's `—`, not zero. Resumed sessions emit several shutdowns: current builds restore cumulative counters (don't sum them), older ones reset to zero (don't take the last), so `scan_copilot` takes the **max**.
 - **GLM** and **Alibaba** have no per-session local data at all and never will from a log scan; don't add speculative parsing for them.
 
@@ -104,7 +105,7 @@ Read [docs/RELEASE.md](docs/RELEASE.md) and the README's data-source table, but 
 
 ### Vendors
 
-Each `vendors/*.rs` client does a thin network call + pure, unit-tested JSON parsing, and **degrades to an error string instead of panicking** — a bad key or unreachable endpoint must never crash the scan. They return a uniform `VendorStatus { configured, ok, error, primary, secondary, detail }`. GLM/z.ai and Anthropic need an API key; Copilot reads a locally-discovered editor/`gh` token by default but prefers an in-app token from the GitHub **device flow** (`copilot_device_start` / `_poll` / `_cancel`, state held in `AppState::pending_copilot_device`); Kimi reads the Kimi Code CLI's stored OAuth login (`~/.kimi-code/credentials/kimi-code.json`, honoring `KIMI_CODE_HOME`) and **renews it in place**: access tokens live only ~15 min and the CLI refreshes only while running, so `collect()` auto-refreshes an expired-by-clock login via the CLI's own public OAuth client (`kimi::refresh`, throttled by `KIMI_REFRESH_MIN_SECS`) and writes the rotated (single-use) refresh token back to the shared file — race-safe because the CLI re-reads that file before/after its own refresh. A login that can't be refreshed is surfaced as `auth_expired`.
+Each `vendors/*.rs` client does a thin network call + pure, unit-tested JSON parsing, and **degrades to an error string instead of panicking** — a bad key or unreachable endpoint must never crash the scan. They return a uniform `VendorStatus { configured, ok, error, primary, secondary, detail }`. GLM/z.ai and Anthropic need an API key; Copilot reads a locally-discovered editor/`gh` token by default but prefers an in-app token from the GitHub **device flow** (`copilot_device_start` / `_poll` / `_cancel`, state held in `AppState::pending_copilot_device`); Kimi reads the Kimi Code CLI's stored OAuth login (`~/.kimi-code/credentials/kimi-code.json`, honoring `KIMI_CODE_HOME`) and **renews it in place**: access tokens live only ~15 min and the CLI refreshes only while running, so `collect()` auto-refreshes an expired-by-clock login via the CLI's own public OAuth client (`kimi::refresh`, throttled by `KIMI_REFRESH_MIN_SECS`) and writes the rotated (single-use) refresh token back to the shared file — race-safe because the CLI re-reads that file before/after its own refresh. Grok does the same against `~/.grok/auth.json` (`GROK_HOME`, `GROK_REFRESH_MIN_SECS`) but **only refreshes a SpaceXAI (`auth.x.ai`) issuer** — never a foreign OIDC entry. SuperGrok billing has no % ceiling; an unrecognized body is an error, not a fake “Grok Build” plan. A login that can't be refreshed is surfaced as `auth_expired`.
 
 ### Secrets
 
