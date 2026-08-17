@@ -33,6 +33,12 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      # The Tauri build script requires the MCP sidecar staged under
+      # src-tauri/binaries/ (gitignored build artifact) — build it before
+      # any cargo command or tauri-build fails with "resource path ... doesn't exist".
+      - name: Build MCP sidecar
+        run: npm run build:mcp
+
       - name: Cargo test
         working-directory: src-tauri
         run: cargo test --all
