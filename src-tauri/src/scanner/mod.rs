@@ -2016,10 +2016,13 @@ fn extract_timestamp(line: &str) -> Option<DateTime<Utc>> {
 
 /// Last path component of a working directory — the project name, as opposed
 /// to Claude's dash-encoded directory names that [`clean_project`] handles.
+/// Splits on both `/` and `\` so a Windows cwd recorded by the CLI
+/// (`C:\proj\foo`) still resolves on macOS/Linux, where `Path::file_name`
+/// doesn't treat `\` as a separator.
 fn project_from_cwd(cwd: &str) -> String {
-    let name = Path::new(cwd)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+    let name = cwd
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
         .unwrap_or_default();
     if name.is_empty() {
         EM_DASH.to_string()
@@ -3038,6 +3041,14 @@ mod tests {
         assert_eq!(project_from_cwd("/Volumes/dev/projects/myproj"), "myproj");
         assert_eq!(project_from_cwd(""), "—");
         assert_eq!(project_from_cwd(&format!("/tmp/{}", "x".repeat(50))).len(), 28);
+    }
+
+    #[test]
+    fn project_from_cwd_handles_windows_paths_on_any_os() {
+        // A cwd recorded on Windows must resolve on macOS/Linux too, where
+        // `Path::file_name` doesn't treat `\` as a separator.
+        assert_eq!(project_from_cwd(r"C:\tmp\agent-status"), "agent-status");
+        assert_eq!(project_from_cwd(r"D:\proj\"), "proj");
     }
 
     #[test]
