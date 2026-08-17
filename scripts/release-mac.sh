@@ -73,17 +73,24 @@ if [[ "${DMG_STYLED:-false}" != "true" ]]; then
   export CI=true
 fi
 
-# Build the MCP sidecar so externalBin can bundle it. A universal build needs a
-# universal (lipo'd) sidecar — cargo can't produce one in a single invocation.
+# Build the MCP sidecar so externalBin can bundle it. A universal build needs
+# the sidecar staged THREE ways: each per-arch compile leg (tauri-build) looks
+# up binaries/agent-status-mcp-<its own triple>, while the final universal
+# bundling step copies binaries/agent-status-mcp-universal-apple-darwin —
+# a single lipo'd file cargo can't produce in one invocation.
 echo "==> Building MCP sidecar (agent-status-mcp)"
 if [[ "$TARGET" == "universal-apple-darwin" ]]; then
   (cd src-tauri \
     && cargo build --release -p agent-status-mcp --target aarch64-apple-darwin \
     && cargo build --release -p agent-status-mcp --target x86_64-apple-darwin)
   mkdir -p src-tauri/binaries
+  cp src-tauri/target/aarch64-apple-darwin/release/agent-status-mcp \
+    src-tauri/binaries/agent-status-mcp-aarch64-apple-darwin
+  cp src-tauri/target/x86_64-apple-darwin/release/agent-status-mcp \
+    src-tauri/binaries/agent-status-mcp-x86_64-apple-darwin
   lipo -create \
-    src-tauri/target/aarch64-apple-darwin/release/agent-status-mcp \
-    src-tauri/target/x86_64-apple-darwin/release/agent-status-mcp \
+    src-tauri/binaries/agent-status-mcp-aarch64-apple-darwin \
+    src-tauri/binaries/agent-status-mcp-x86_64-apple-darwin \
     -output src-tauri/binaries/agent-status-mcp-universal-apple-darwin
 else
   MCP_TARGET="$TARGET" node scripts/build-mcp.mjs
