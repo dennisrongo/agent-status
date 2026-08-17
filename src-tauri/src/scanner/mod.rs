@@ -50,6 +50,10 @@ pub struct UsageSnapshot {
     /// `vendor.glm`, which carries the quota windows only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub glm_week: Option<crate::vendors::glm::GlmWeek>,
+    /// Cursor 7-day usage chart (spend/day + per-model breakdown), filled in
+    /// by the command layer from the dashboard usage-events endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_week: Option<crate::vendors::cursor::CursorWeek>,
     /// Local Grok CLI token totals (7-day chart + per-model), built from
     /// session logs. SuperGrok has no public % ceiling, so this is the real
     /// usage the Overview can show.
@@ -914,6 +918,7 @@ fn build_snapshot(
         // z.ai 7-day usage chart — filled in by the command layer after a live
         // fetch, like `vendor`/`detection` (the scanner sees no z.ai data).
         glm_week: None,
+        cursor_week: None,
         grok_week,
         codex_week,
         detection: None,

@@ -12,7 +12,7 @@ import { useAutoRotate } from "./hooks/useAutoRotate";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { generatedLabel, tileLabel } from "./format";
-import type { CodexWeek, Glm, GlmWeek, GrokWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
+import type { CodexWeek, CursorWeek, Glm, GlmWeek, GrokWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
 
@@ -107,7 +107,7 @@ export default function App() {
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
@@ -172,8 +172,9 @@ export default function App() {
   const showKimi = snapshot?.detection?.kimi ?? false;
   const showGrok = snapshot?.detection?.grok ?? false;
   const showCodex = snapshot?.detection?.codex ?? false;
+  const showCursor = snapshot?.detection?.cursor ?? false;
   const hidden = new Set(settings?.hiddenProviders ?? []);
-  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex")[] = [
+  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
@@ -181,9 +182,10 @@ export default function App() {
     ...(showKimi ? (["kimi"] as const) : []),
     ...(showGrok ? (["grok"] as const) : []),
     ...(showCodex ? (["codex"] as const) : []),
+    ...(showCursor ? (["cursor"] as const) : []),
   ];
   const visible = available.filter((p) => !hidden.has(p));
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex")[] = visible.length
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor")[] = visible.length
     ? visible
     : available.length
       ? available
@@ -234,6 +236,7 @@ export default function App() {
               <span className="boot-dot kimi" />
               <span className="boot-dot grok" />
               <span className="boot-dot codex" />
+              <span className="boot-dot cursor" />
             </div>
             <div className="boot-skel" aria-hidden="true">
               <div className="skel-kpis">
@@ -254,6 +257,7 @@ export default function App() {
   const glmWeek = snapshot.glmWeek;
   const grokWeek = snapshot.grokWeek;
   const codexWeek = snapshot.codexWeek;
+  const cursorWeek = snapshot.cursorWeek;
 
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
@@ -362,7 +366,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : p === "kimi" ? "Moonshot" : p === "grok" ? "xAI" : "Codex"}
+                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : p === "kimi" ? "Moonshot" : p === "grok" ? "xAI" : p === "codex" ? "Codex" : "Cursor"}
                   </button>
                 ))}
               </div>
@@ -502,6 +506,15 @@ export default function App() {
                 loginError={codexLoginError}
               />
             )}
+
+            {eff === "cursor" && (
+              <CursorOverview
+                vendor={snapshot.vendor?.cursor}
+                cursorWeek={cursorWeek}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+              />
+            )}
               </>
             )}
           </section>
@@ -629,6 +642,14 @@ export default function App() {
                   name="Codex"
                   meta={vendorMeta(snapshot.vendor?.codex, "sign in via the Codex CLI")}
                   primary={vendorPrimary(snapshot.vendor?.codex)}
+                />
+              )}
+              {showCursor && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.cursor)}
+                  name="Cursor"
+                  meta={vendorMeta(snapshot.vendor?.cursor, "add a User API Key (crsr_…) in Settings")}
+                  primary={vendorPrimary(snapshot.vendor?.cursor)}
                 />
               )}
             </div>
@@ -1440,6 +1461,96 @@ function CodexOverview({
             Token counts come from local Codex CLI session logs. Plus and Pro
             are subscription plans, so there is no dollar column.
           </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function CursorOverview({
+  vendor,
+  cursorWeek,
+  minimal,
+  onConnect,
+}: {
+  vendor: VendorStatus | undefined;
+  cursorWeek: CursorWeek | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+  // The included-usage window carries a pct + status → ring-gauge tile.
+  const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  // Plan / Cycle resets / On-demand rows are plain text — no pct.
+  const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
+
+  return (
+    <>
+      {live && vendor ? (
+        <>
+          {windows.length > 0 ? (
+            <QuotaMeters windows={windows} />
+          ) : (
+            // No metered window (unmetered plan): show the headline instead.
+            <div className="kpis glm-kpis">
+              <div className="kpi">
+                <div className="k-label">{vendor.secondary || "included usage"}</div>
+                <div className="k-num">{vendor.primary}</div>
+                <div className="k-sub">live</div>
+              </div>
+            </div>
+          )}
+          {!minimal && cursorWeek && cursorWeek.days.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>Last 7 days</h2>
+                <span className="meta">
+                  {cursorWeek.weekSpend} · {cursorWeek.events} events
+                </span>
+              </div>
+              <WeekChart week={cursorWeek.days} />
+              {cursorWeek.models.length > 0 && (
+                <div className="budget">
+                  {cursorWeek.models.map((m, i) => (
+                    <div
+                      className="budget-foot"
+                      key={`${m.label}-${i}`}
+                      style={i === 0 ? { marginTop: 0 } : undefined}
+                    >
+                      <span className="used">{m.label}</span>
+                      <span className="rem">{m.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          {!minimal && facts.length > 0 && (
+            <div className="budget" style={{ marginTop: 9 }}>
+              {facts.map((d, i) => (
+                <div className="budget-foot" key={`${d.label}-${i}`} style={{ marginTop: 0 }}>
+                  <span className="used">{d.label}</span>
+                  <span className="rem">{d.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="connect-card">
+          <p className="connect-title">
+            {vendor?.configured
+              ? `Couldn’t reach Cursor${vendor.error ? `: ${vendor.error}` : ""}`
+              : "No Cursor usage data yet"}
+          </p>
+          <p className="connect-sub">
+            Add a Cursor User API Key (Cursor Dashboard → API Keys, starts with{" "}
+            <code>crsr_</code>) to pull real plan spend &amp; usage. If the Cursor
+            Agent CLI is signed in, its key is used automatically.
+          </p>
+          <button className="btn primary" onClick={onConnect}>
+            Add API key →
+          </button>
         </div>
       )}
     </>

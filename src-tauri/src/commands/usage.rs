@@ -11,7 +11,7 @@ use crate::process_util::SilentCommand;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
-use crate::vendors::{alibaba, anthropic, claude, codex, copilot, glm, grok, kimi, Detection, VendorReport, VendorStatus};
+use crate::vendors::{alibaba, anthropic, claude, codex, copilot, cursor, glm, grok, kimi, Detection, VendorReport, VendorStatus};
 
 /// The user code + verification URL the UI shows during a Copilot device-flow
 /// connect. The device code itself stays server-side in `AppState`.
@@ -66,6 +66,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         codex_refresh_due,
         glm_week_cached,
         glm_week_due,
+        cursor_key,
+        cursor_week_cached,
+        cursor_week_due,
     ) = {
         let state = app.state::<Mutex<AppState>>();
         let guard = state.lock().map_err(|e| e.to_string())?;
@@ -110,6 +113,10 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         // bounded by GLM_WEEK_CACHE_MAX_SECS like the Copilot/Bailian caches.
         let glm_week_due = guard.glm_week_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::GLM_WEEK_MIN_SECS
+        });
+        // Same gentle throttle + age-bounded cache for the Cursor 7-day chart.
+        let cursor_week_due = guard.cursor_week_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::CURSOR_WEEK_MIN_SECS
         });
         (
             guard.settings.plan.clone(),
@@ -163,6 +170,13 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
                 })
             }),
             glm_week_due,
+            guard.settings.cursor_key.clone(),
+            guard.cursor_week_last_good.clone().filter(|_| {
+                guard.cursor_week_last_good_at.is_some_and(|t| {
+                    (now - t).num_seconds() < crate::state::CURSOR_WEEK_CACHE_MAX_SECS
+                })
+            }),
+            cursor_week_due,
         )
     };
 
@@ -345,7 +359,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     // before the join moves the key, and hand the week fetch its own clone.
     let zai_key_present = zai_key.is_some();
     let zai_key_week = zai_key.clone();
-    let (glm_status, glm_week_result, anthropic_status, kimi_status, grok_status, codex_status) =
+    let cursor_key_present = cursor_key.is_some();
+    let cursor_key_week = cursor_key.clone();
+    let (glm_status, glm_week_result, anthropic_status, kimi_status, grok_status, codex_status, cursor_status, cursor_week_result) =
         tokio::join!(
             fetch_glm(zai_key, &glm_endpoint, now),
             fetch_glm_week(zai_key_week.as_ref(), &glm_endpoint, now, glm_week_due),
@@ -353,6 +369,8 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             kimi::fetch(now),
             grok::fetch(now),
             codex::fetch(now),
+            fetch_cursor(cursor_key, now),
+            fetch_cursor_week(cursor_key_week.as_ref(), now, cursor_week_due),
         );
     // z.ai 7-day chart: serve the fresh reading, else the age-bounded cache. A
     // failure with nothing cached simply hides the section — the quota card
@@ -374,6 +392,26 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             glm_week_cached
         }
         None => glm_week_cached,
+    };
+    // Cursor 7-day chart: same policy as z.ai — fresh reading, else the
+    // age-bounded cache; a failure with nothing cached hides the section and
+    // leaves the throttle unstamped so the next collect retries. The cache is
+    // dropped when no key (settings or CLI auth.json) remains, so a stale
+    // chart can't outlive a sign-out.
+    let mut cursor_week_fresh_good: Option<cursor::CursorWeek> = None;
+    let mut cursor_week_attempted = false;
+    let cursor_week_clear_cache = !cursor_key_present && !cursor_status.configured;
+    let cursor_week: Option<cursor::CursorWeek> = match cursor_week_result {
+        Some(Ok(week)) => {
+            cursor_week_attempted = true;
+            cursor_week_fresh_good = Some(week.clone());
+            Some(week)
+        }
+        Some(Err(_)) => {
+            cursor_week_attempted = cursor_week_cached.is_some();
+            cursor_week_cached
+        }
+        None => cursor_week_cached,
     };
     // Keep the last good Bailian reading through a transient `bl` failure so one
     // bad tick doesn't flip real quota data into a "couldn't read" card. Only a
@@ -448,6 +486,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         codex: codex_status.configured
             || codex::cli_on_path()
             || snapshot.sessions.iter().any(|s| s.provider == "codex"),
+        // A key in settings or the Cursor Agent CLI's auth.json — the fetch
+        // resolves both, so `configured` captures either source.
+        cursor: cursor_status.configured,
         claude_signed_in: claude_ts.present,
         // "Expired" here means the login genuinely needs a manual reconnect — not
         // merely that the short-lived access token is past its clock. A live
@@ -469,6 +510,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         kimi: kimi_status,
         grok: grok_status,
         codex: codex_status,
+        cursor: cursor_status,
     });
 
     // z.ai activity rows for the Sessions tab: one per active hour from the
@@ -505,6 +547,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         snapshot.sessions.sort_by(|a, b| b.at.cmp(&a.at));
     }
     snapshot.glm_week = glm_week;
+    snapshot.cursor_week = cursor_week;
 
     // When the MCP export is on, project the snapshot into the compact export
     // format and write it for the sidecar server (below, after the state lock).
@@ -573,6 +616,19 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if glm_week_attempted {
             guard.glm_week_attempted_at = Some(now);
+        }
+        // Same cache/clear policy for the Cursor 7-day chart.
+        if let Some(good) = cursor_week_fresh_good {
+            guard.cursor_week_last_good = Some(good);
+            guard.cursor_week_last_good_at = Some(now);
+        }
+        if cursor_week_clear_cache {
+            guard.cursor_week_last_good = None;
+            guard.cursor_week_last_good_at = None;
+            guard.cursor_week_attempted_at = None;
+        }
+        if cursor_week_attempted {
+            guard.cursor_week_attempted_at = Some(now);
         }
     }
 
@@ -648,6 +704,41 @@ async fn fetch_anthropic(key: Option<EncryptedSecret>) -> VendorStatus {
             Err(e) => VendorStatus::failed(format!("key decrypt: {e}")),
         },
     }
+}
+
+/// Cursor resolves its key itself: the settings key wins, else the Cursor
+/// Agent CLI's `auth.json` (`crsr_...` apiKey field). Neither → not_configured.
+async fn fetch_cursor(key: Option<EncryptedSecret>, now: chrono::DateTime<chrono::Utc>) -> VendorStatus {
+    let decrypted = match key {
+        None => None,
+        Some(secret) => match encryption::decrypt(&secret) {
+            Ok(k) => Some(k),
+            Err(e) => return VendorStatus::failed(format!("key decrypt: {e}")),
+        },
+    };
+    cursor::fetch(decrypted.as_deref(), now).await
+}
+
+/// Fetch the Cursor 7-day usage chart. `None` means "nothing to do right now"
+/// — throttled, or no key anywhere (settings or CLI) to fetch with.
+async fn fetch_cursor_week(
+    key: Option<&EncryptedSecret>,
+    now: chrono::DateTime<chrono::Utc>,
+    due: bool,
+) -> Option<Result<cursor::CursorWeek, String>> {
+    if !due {
+        return None;
+    }
+    let decrypted = match key {
+        None => None,
+        Some(secret) => match encryption::decrypt(secret) {
+            Ok(k) => Some(k),
+            Err(e) => return Some(Err(format!("key decrypt: {e}"))),
+        },
+    };
+    // No settings key AND no CLI auth.json → the section simply doesn't render.
+    cursor::resolve_api_key(decrypted.as_deref())?;
+    Some(cursor::fetch_week(decrypted.as_deref(), now).await)
 }
 
 /// Copilot reads a locally-discovered token by default; a token connected
@@ -938,7 +1029,7 @@ pub fn set_tooltip_provider(
     provider: String,
 ) -> Result<SettingsView, String> {
     match provider.as_str() {
-        "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" => {}
+        "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor" => {}
         other => return Err(format!("unknown provider: {other}")),
     }
     let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
@@ -989,7 +1080,7 @@ pub fn set_hidden_providers(
 ) -> Result<SettingsView, String> {
     for p in &providers {
         match p.as_str() {
-            "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" => {}
+            "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor" => {}
             other => return Err(format!("unknown provider: {other}")),
         }
     }
@@ -1047,7 +1138,8 @@ pub fn set_glm_endpoint(
     Ok((&updated).into())
 }
 
-/// Encrypt and store an API key. `provider` is "glm" (or "zai") or "anthropic".
+/// Encrypt and store an API key. `provider` is "glm" (or "zai"), "anthropic",
+/// or "cursor".
 #[tauri::command]
 pub fn set_api_key(
     app: AppHandle,
@@ -1063,6 +1155,7 @@ pub fn set_api_key(
     let updated = match provider.as_str() {
         "glm" | "zai" => update_settings(&state, |s| s.zai_key = Some(secret))?,
         "anthropic" => update_settings(&state, |s| s.anthropic_key = Some(secret))?,
+        "cursor" => update_settings(&state, |s| s.cursor_key = Some(secret))?,
         other => return Err(format!("unknown provider: {other}")),
     };
     if matches!(provider.as_str(), "glm" | "zai") {
@@ -1073,6 +1166,13 @@ pub fn set_api_key(
         guard.glm_week_last_good = None;
         guard.glm_week_last_good_at = None;
         guard.glm_week_attempted_at = None;
+    }
+    if provider == "cursor" {
+        // Same reset for the Cursor 7-day chart.
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.cursor_week_last_good = None;
+        guard.cursor_week_last_good_at = None;
+        guard.cursor_week_attempted_at = None;
     }
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())
@@ -1088,6 +1188,7 @@ pub fn clear_api_key(
     let updated = match provider.as_str() {
         "glm" | "zai" => update_settings(&state, |s| s.zai_key = None)?,
         "anthropic" => update_settings(&state, |s| s.anthropic_key = None)?,
+        "cursor" => update_settings(&state, |s| s.cursor_key = None)?,
         other => return Err(format!("unknown provider: {other}")),
     };
     if matches!(provider.as_str(), "glm" | "zai") {
@@ -1098,6 +1199,13 @@ pub fn clear_api_key(
         guard.glm_week_last_good = None;
         guard.glm_week_last_good_at = None;
         guard.glm_week_attempted_at = None;
+    }
+    if provider == "cursor" {
+        // Same drop for the Cursor 7-day chart.
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.cursor_week_last_good = None;
+        guard.cursor_week_last_good_at = None;
+        guard.cursor_week_attempted_at = None;
     }
     settings::save(&app, &updated).into_string()?;
     Ok((&updated).into())

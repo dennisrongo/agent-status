@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod cursor;
 pub mod glm;
 pub mod grok;
 pub mod kimi;
@@ -116,6 +117,7 @@ pub struct VendorReport {
     pub kimi: VendorStatus,
     pub grok: VendorStatus,
     pub codex: VendorStatus,
+    pub cursor: VendorStatus,
 }
 
 /// Which providers are actually present on this machine, so the UI can hide the
@@ -133,6 +135,8 @@ pub struct VendorReport {
 ///   CLI is on PATH, or local session logs were found.
 /// - `codex`: a Codex CLI OAuth login exists (`~/.codex/auth.json`), the
 ///   `codex` CLI is on PATH, or local session logs were found.
+/// - `cursor`: a Cursor User API Key (`crsr_...`) is configured in settings,
+///   or the Cursor Agent CLI's `auth.json` carries one.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detection {
@@ -143,6 +147,7 @@ pub struct Detection {
     pub kimi: bool,
     pub grok: bool,
     pub codex: bool,
+    pub cursor: bool,
     /// Whether a Claude Code OAuth login is actually present on this machine
     /// (distinct from `claude`, which is also true when only the CLI is on PATH).
     /// Drives the connected/disconnected control, independent of the live toggle.

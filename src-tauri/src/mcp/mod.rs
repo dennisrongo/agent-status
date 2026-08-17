@@ -200,6 +200,7 @@ pub fn build_mcp_snapshot(snapshot: &UsageSnapshot) -> McpSnapshot {
         push("kimi", "Kimi (Moonshot)", &vendor.kimi, |d| d.kimi);
         push("grok", "Grok (xAI)", &vendor.grok, |d| d.grok);
         push("codex", "Codex (OpenAI)", &vendor.codex, |d| d.codex);
+        push("cursor", "Cursor", &vendor.cursor, |d| d.cursor);
         // vendor.anthropic is org-level API cost (Admin API), not a coding
         // quota window — the "claude" entry above already covers Anthropic
         // capacity, so it is deliberately not exported.

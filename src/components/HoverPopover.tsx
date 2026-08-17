@@ -41,7 +41,7 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi" || e.payload === "grok" || e.payload === "codex")
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi" || e.payload === "grok" || e.payload === "codex" || e.payload === "cursor")
             setProvider(e.payload);
         }),
       );
@@ -249,6 +249,15 @@ function HoverContent({
       </>
     );
   }
+  if (provider === "cursor")
+    return (
+      <VendorMeters
+        vendor={snapshot.vendor?.cursor}
+        srcLabel="Cursor"
+        setupHint="Add a Cursor User API Key (crsr_…) in the app to see usage."
+        errorLead="Couldn’t reach Cursor"
+      />
+    );
   return <ClaudeContent snapshot={snapshot} />;
 }
 

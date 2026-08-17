@@ -63,8 +63,8 @@ function InfoTip({ children, label }: { children: React.ReactNode; label?: strin
 
 interface Props {
   settings: SettingsView;
-  setApiKey: (provider: "glm" | "anthropic", key: string) => Promise<SettingsView | null>;
-  clearApiKey: (provider: "glm" | "anthropic") => Promise<void>;
+  setApiKey: (provider: "glm" | "anthropic" | "cursor", key: string) => Promise<SettingsView | null>;
+  clearApiKey: (provider: "glm" | "anthropic" | "cursor") => Promise<void>;
   setGlmEndpoint: (endpoint: string) => Promise<void>;
   setRefreshSecs: (secs: number) => Promise<void>;
   setLiveClaude: (enabled: boolean) => Promise<void>;
@@ -179,6 +179,7 @@ const OVERVIEW_PROVIDERS = [
   { id: "kimi", label: "Moonshot" },
   { id: "grok", label: "xAI" },
   { id: "codex", label: "Codex" },
+  { id: "cursor", label: "Cursor" },
 ] as const;
 
 export function Settings({
@@ -288,6 +289,7 @@ export function Settings({
       case "codex": return codexVendorStatus?.configured
         ? codexVendorStatus.authExpired ? "login expired" : "connected"
         : "not detected";
+      case "cursor": return settings.cursorKeySet ? "API key set" : "no API key";
       default: return "";
     }
   };
@@ -328,6 +330,7 @@ export function Settings({
           <option value="kimi">Moonshot</option>
           <option value="grok">xAI</option>
           <option value="codex">Codex</option>
+          <option value="cursor">Cursor</option>
         </select>
       </div>
       <div className="key-row">
@@ -553,6 +556,19 @@ export function Settings({
         </div>
         <EndpointRow value={settings.glmEndpoint} onSave={setGlmEndpoint} />
       </div>
+
+      <div className="sec-head">
+        <h2>Cursor</h2>
+        <span className="meta">stored encrypted</span>
+      </div>
+      <KeyRow
+        label="User API Key"
+        hint="crsr_… — Cursor Dashboard → API Keys"
+        sub="Plan spend & usage via your Cursor account. When no key is set, the Cursor Agent CLI's own login (auth.json) is used automatically."
+        isSet={settings.cursorKeySet}
+        onSave={(k) => setApiKey("cursor", k)}
+        onClear={() => clearApiKey("cursor")}
+      />
 
       <div className="sec-head">
         <h2>Alibaba</h2>

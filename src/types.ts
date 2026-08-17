@@ -68,7 +68,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
-  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex";
+  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor";
   /** Pre-rendered by Rust — "1.2M", or "—" when the provider records no count. */
   tokensText: string;
   /** Pre-rendered by Rust — dollars, premium requests, or "—". */
@@ -121,6 +121,7 @@ export interface VendorReport {
   kimi: VendorStatus;
   grok: VendorStatus;
   codex: VendorStatus;
+  cursor: VendorStatus;
 }
 
 /** z.ai "Last 7 days" view, fetched from the monitor `model-usage` endpoint.
@@ -160,6 +161,17 @@ export interface CodexWeek {
   windows?: VendorKeyVal[];
 }
 
+/** Cursor "Last 7 days" view, fetched from the dashboard usage-events
+ *  endpoint — Cursor writes no usable local session log, so the chart is
+ *  API-sourced. `days` reuses the Claude week-chart shape; spend is USD. */
+export interface CursorWeek {
+  days: WeekDay[];
+  models: VendorKeyVal[];
+  weekSpend: string;
+  events: number;
+  last: string;
+}
+
 export interface Detection {
   claude: boolean;
   glm: boolean;
@@ -168,6 +180,7 @@ export interface Detection {
   kimi: boolean;
   grok: boolean;
   codex: boolean;
+  cursor: boolean;
   /** A Claude Code OAuth login is present on this machine (independent of the
    * live toggle). Drives the connect/disconnect control. */
   claudeSignedIn: boolean;
@@ -192,6 +205,9 @@ export interface UsageSnapshot {
   grokWeek?: GrokWeek;
   /** Present when local Codex CLI session logs were found. */
   codexWeek?: CodexWeek;
+  /** Present once a Cursor key (settings or CLI) is found and the 7-day
+   *  usage-events fetch has succeeded. */
+  cursorWeek?: CursorWeek;
   detection?: Detection;
 }
 
@@ -243,7 +259,7 @@ export interface KimiDeviceLogin {
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex";
+export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" | "cursor";
 
 export type WindowMode = "dock" | "float";
 
@@ -253,6 +269,7 @@ export interface SettingsView {
   glmEndpoint: string;
   glmKeySet: boolean;
   anthropicKeySet: boolean;
+  cursorKeySet: boolean;
   copilotConnected: boolean;
   liveClaude: boolean;
   launchOnStartup: boolean;

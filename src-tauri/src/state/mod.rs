@@ -169,6 +169,15 @@ pub struct AppState {
     /// hovers don't repeatedly pull the week-sized payload. Cleared when the
     /// z.ai key changes so a new key refetches immediately.
     pub glm_week_attempted_at: Option<DateTime<Utc>>,
+    /// Last *successful* Cursor 7-day usage-events reading. Same shape and
+    /// policy as `glm_week_last_good` — polled gently, cached in between.
+    pub cursor_week_last_good: Option<crate::vendors::cursor::CursorWeek>,
+    /// When `cursor_week_last_good` was captured.
+    pub cursor_week_last_good_at: Option<DateTime<Utc>>,
+    /// When the Cursor usage-events endpoint was last *attempted* (see
+    /// `CURSOR_WEEK_MIN_SECS`). Cleared when the key changes so a new key
+    /// refetches immediately.
+    pub cursor_week_attempted_at: Option<DateTime<Utc>>,
 }
 
 /// Serializes `collect()` so concurrent callers (refresh-on-open, the frontend
@@ -236,6 +245,13 @@ pub const GLM_WEEK_MIN_SECS: i64 = 900;
 /// past this the section hides rather than showing an increasingly stale chart.
 pub const GLM_WEEK_CACHE_MAX_SECS: i64 = 7200;
 
+/// Minimum seconds between Cursor 7-day usage-events fetches. Mirrors
+/// `GLM_WEEK_MIN_SECS` — the payload is a week of events and moves slowly.
+pub const CURSOR_WEEK_MIN_SECS: i64 = 900;
+
+/// Longest a cached Cursor 7-day reading is served while fetches keep failing.
+pub const CURSOR_WEEK_CACHE_MAX_SECS: i64 = 7200;
+
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         Self {
@@ -259,6 +275,9 @@ impl AppState {
             glm_week_last_good: None,
             glm_week_last_good_at: None,
             glm_week_attempted_at: None,
+            cursor_week_last_good: None,
+            cursor_week_last_good_at: None,
+            cursor_week_attempted_at: None,
         }
     }
 }

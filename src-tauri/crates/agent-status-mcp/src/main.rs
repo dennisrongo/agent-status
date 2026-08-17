@@ -169,7 +169,7 @@ pub fn provider_status_text(snap: &McpSnapshot, provider: &str) -> String {
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct ProviderRequest {
-    /// Provider id: claude, zai, copilot, alibaba, kimi, grok, or codex.
+    /// Provider id: claude, zai, copilot, alibaba, kimi, grok, codex, or cursor.
     pub provider: String,
 }
 
@@ -205,8 +205,8 @@ impl AgentStatus {
     }
 
     /// Show detailed status for one provider id (claude, zai, copilot,
-    /// alibaba, kimi, grok, codex), including extra detail rows.
-    #[tool(description = "Show detailed status for one AI coding provider by id (claude, zai, copilot, alibaba, kimi, grok, codex): configured/ok/auth state, 5-hour and weekly windows, and extra detail rows.")]
+    /// alibaba, kimi, grok, codex, cursor), including extra detail rows.
+    #[tool(description = "Show detailed status for one AI coding provider by id (claude, zai, copilot, alibaba, kimi, grok, codex, cursor): configured/ok/auth state, 5-hour and weekly windows, and extra detail rows.")]
     fn get_provider_status(
         &self,
         Parameters(req): Parameters<ProviderRequest>,

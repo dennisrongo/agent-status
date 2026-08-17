@@ -19,7 +19,7 @@ import type {
 } from "../types";
 import { useTauriCommand } from "./useTauriCommand";
 
-type Provider = "glm" | "anthropic";
+type Provider = "glm" | "anthropic" | "cursor";
 
 /**
  * Loads the usage snapshot, subscribes to background `usage-updated` events,

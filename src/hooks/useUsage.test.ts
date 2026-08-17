@@ -31,6 +31,7 @@ const mockSettings: SettingsView = {
   glmEndpoint: "https://api.z.ai/api/monitor/usage/quota/limit",
   glmKeySet: false,
   anthropicKeySet: false,
+  cursorKeySet: false,
   copilotConnected: false,
   liveClaude: false,
   launchOnStartup: true,
