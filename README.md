@@ -15,7 +15,7 @@ Per-provider usage · live vendor quota · token spend · cost estimates · sess
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![Platform](https://img.shields.io/badge/macOS-menubar-000000?logo=apple&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-171%20passing-3FB950)
+![Tests](https://img.shields.io/badge/tests-325%20passing-3FB950)
 
 <br/>
 
@@ -208,6 +208,40 @@ notarization credentials, verification, universal builds, troubleshooting).
 
 ---
 
+## 🤖 MCP server for AI agents
+
+Agent Usage Monitor can expose its merged quota data to AI coding agents over **MCP** (Model Context Protocol). A tiny companion binary, `agent-status-mcp`, ships inside the app bundle and serves a **read-only** snapshot — agents can ask *"which provider has the most 5-hour headroom right now?"* before starting a long task, across Claude, Z.ai, Copilot, Alibaba, Kimi, Grok, and Codex. No secrets are ever included; the data is a cached snapshot (up to ~5 min old while the app is hidden).
+
+### Setup
+
+1. Open **Settings → AI agents (MCP)** and enable **Expose usage data to agents (MCP)**.
+2. Flip the toggle on for each agent you use (Claude Code, Cursor, Codex CLI, Kimi Code) — checked means registered. Settings resolves the bundled binary's path automatically.
+3. **Restart the agent** — most agents launch MCP servers at startup. (The **How to connect** popover in Settings also has copyable per-agent instructions and a paste-in block you can hand to any other MCP-capable agent so it can connect itself.)
+4. Ask the agent, e.g.:
+
+   > Use the agent-status MCP server's get_capacity tool to check which provider has the most 5-hour headroom before we start.
+
+### Manual configuration
+
+Prefer editing configs yourself? Register the `agent-status-mcp` binary like this:
+
+- **Claude Code** — `~/.claude.json`:
+  ```json
+  { "mcpServers": { "agent-status": { "command": "/path/to/agent-status-mcp", "args": [] } } }
+  ```
+- **Cursor** — `~/.cursor/mcp.json`: same `mcpServers` shape.
+- **Codex CLI** — `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`):
+  ```toml
+  [mcp_servers.agent-status]
+  command = "/path/to/agent-status-mcp"
+  args = []
+  ```
+- **Kimi Code** — `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`): same `[mcp_servers.agent-status]` table.
+
+The server speaks stdio and exposes two read-only tools: `get_capacity` (all providers + suggested picks) and `get_provider_status(provider)`. It reads only the cached `agent-snapshot.json` the app writes while the toggle is on.
+
+---
+
 ## ⚙️ Configuration
 
 - **Auto-refresh interval** — choose 10s / 15s / 30s / 1m / 2m / 5m in Settings (default **30s**); takes effect on the next cycle.
@@ -233,8 +267,10 @@ agent-status/
 │   ├── components/           # About, HoverPopover, Meter, Settings, UpdateBanner, WeekChart
 │   └── styles/app.css
 └── src-tauri/                # Rust backend (rich)
+    ├── crates/agent-status-mcp/ # read-only MCP stdio sidecar for AI agents
     └── src/
         ├── commands/         # invoke handlers (collect = scan + vendor)
+        ├── mcp/              # snapshot export + per-agent MCP registration
         ├── scanner/          # log → UsageSnapshot aggregation
         ├── vendors/          # claude · glm · anthropic · copilot · alibaba · kimi · grok · codex
         ├── encryption/       # at-rest key vault
@@ -247,8 +283,8 @@ agent-status/
 ## 🧪 Tests
 
 ```bash
-cd src-tauri && cargo test --all     # 127 Rust tests: scanner, encryption, vendor parsers
-npm test                             # 44 frontend tests: hooks + components
+cd src-tauri && cargo test --all     # 263 Rust tests: scanner, encryption, vendor parsers, MCP
+npm test                             # 62 frontend tests: hooks + components
 ```
 
 CI runs the suite on macOS / Windows / Ubuntu (`.github/workflows/unit-tests.yml`).

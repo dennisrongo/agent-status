@@ -63,9 +63,29 @@ src/ (React)                         src-tauri/src/ (Rust)
   hooks/useTauriCommand              scanner/   logs → UsageSnapshot
   components/Meter,WeekChart,…       vendors/   claude·glm·anthropic·copilot·alibaba·kimi·grok·codex
   renders snapshot  ◀── event ────── encryption/ settings/ state/ storage/
-                  "usage-updated"    tray.rs    menubar icon + dropdown
+                  "usage-updated"    mcp/       snapshot export + agent registration
+                                     tray.rs    menubar icon + dropdown
                                        ▲ lib.rs: background timer loop
 ```
+
+When `settings.mcp_enabled` is on, `collect()` also writes a compact
+`McpSnapshot` (`mcp::build_mcp_snapshot`) to `agent-snapshot.json` in the app
+data dir — a read-only export for AI coding agents. `src-tauri/crates/
+agent-status-mcp` is a separate, Tauri-free binary crate (workspace member;
+`rust-version = "1.88"` because rmcp 3.x needs it — the main app stays at
+1.77) that serves that file as an MCP stdio server (`get_capacity`,
+`get_provider_status`). Its serde mirror types must stay in sync with
+`src/mcp/mod.rs`. Per-agent registration (commands in `commands/mcp.rs`:
+`set_mcp_enabled`, `get_mcp_agents`, `register_mcp_agent`,
+`unregister_mcp_agent`) read-modify-writes `~/.claude.json`,
+`~/.cursor/mcp.json`, `$CODEX_HOME/config.toml`, `$KIMI_CODE_HOME/config.toml`
+(serde_json / toml_edit, preserving everything else). While the window is
+hidden the background loop still collects every `MCP_HIDDEN_TICK_SECS` (300)
+when the toggle is on, so the snapshot agents read stays fresh. The sidecar is
+built by `scripts/build-mcp.mjs` into `src-tauri/binaries/agent-status-mcp-
+<triple>` and bundled via `bundle.externalBin` — `npm run tauri …` always runs
+it first (`pretauri`), and the release scripts do too (mac universal builds
+lipo both arches).
 
 ### The snapshot is the single source of truth
 
@@ -84,7 +104,7 @@ src/ (React)                         src-tauri/src/ (Rust)
 - **`CollectLock`** (a `tokio::sync::Mutex` in [state/mod.rs](src-tauri/src/state/mod.rs), managed separately from `AppState` because it's held across `.await`) serializes all `collect()` calls. On window open, `refresh_on_open` and the frontend's `get_usage` fire near-simultaneously; without serialization they race the rate-limited live endpoint and emit conflicting estimate-vs-live snapshots.
 - **Live `/usage` throttle**: the live Claude endpoint rate-limits hard, so it's fetched at most once per `LIVE_CLAUDE_MIN_SECS` (120s) regardless of the faster log-scan refresh interval. Between fetches, `collect()` serves `live_claude_buckets` (the last *good* live reading). Never fall back to the local estimate mid-stream — the two are on different scales and the meters would visibly flip-flop. The live-data state machine has distinct UI states (`live` / `pending` / `needs_reauth` / `signed_out`) — read the big `if live_claude { … }` block before touching it.
 - **Out-of-order snapshots**: `Meta.generatedMs` stamps every snapshot; the frontend (`useUsage`'s `applySnapshot`) drops any snapshot older than what's displayed. Multiple emitters race, so this guard is load-bearing.
-- The background loop **only polls while the window is visible** — no network calls when the dropdown is hidden.
+- The background loop **only polls while the window is visible** — no network calls when the dropdown is hidden. The one exception: when the MCP export (`settings.mcp_enabled`) is on, it also collects every `MCP_HIDDEN_TICK_SECS` while hidden so the snapshot agents read stays fresh.
 
 ### Sessions come from several log formats, and they disagree
 

@@ -319,6 +319,12 @@ $ManifestPath = 'updater/latest.json'
 Write-Host ''
 Write-Host "==> Following macOS release $Tag on $Repo (building Windows NSIS for $Version)"
 
+# --- Build the MCP sidecar so externalBin can bundle it ---------------------
+Write-Host ''
+Write-Host '==> Building MCP sidecar (agent-status-mcp)'
+node scripts/build-mcp.mjs
+Assert-LastExit 'build-mcp'
+
 # --- Build (NSIS only, NO build-time signing) --------------------------------
 # We DISABLE createUpdaterArtifacts for the build so `tauri build` never signs.
 # Why: its build-time signer reads the key password from

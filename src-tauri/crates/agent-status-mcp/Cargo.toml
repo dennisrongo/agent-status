@@ -1,0 +1,23 @@
+[package]
+name = "agent-status-mcp"
+version = "0.9.0"
+edition = "2021"
+# rmcp 3.x requires rustc >= 1.88 (newer than the main app's 1.77 floor).
+rust-version = "1.88"
+description = "Read-only MCP stdio server exposing Agent Usage Monitor's cached provider capacity snapshot"
+publish = false
+
+[dependencies]
+rmcp = { version = "3", features = ["transport-io", "schemars"] }
+# Not dead weight: the rmcp::schemars::JsonSchema derive expands to code that
+# references the `schemars` crate by name, so it must be a direct dependency.
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+anyhow = "1"
+chrono = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

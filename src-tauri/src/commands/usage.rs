@@ -506,10 +506,16 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
     }
     snapshot.glm_week = glm_week;
 
+    // When the MCP export is on, project the snapshot into the compact export
+    // format and write it for the sidecar server (below, after the state lock).
+    let mut mcp_export: Option<crate::mcp::McpSnapshot> = None;
     {
         let state = app.state::<Mutex<AppState>>();
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         guard.snapshot = Some(snapshot.clone());
+        if guard.settings.mcp_enabled {
+            mcp_export = Some(crate::mcp::build_mcp_snapshot(&snapshot));
+        }
         if let Some(buckets) = fresh_live {
             guard.live_claude_buckets = Some(buckets);
         }
@@ -567,6 +573,33 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if glm_week_attempted {
             guard.glm_week_attempted_at = Some(now);
+        }
+    }
+
+    // Persist the MCP snapshot for the sidecar server. Best-effort: a failed
+    // write only logs — it must never fail the collect itself.
+    if let Some(export) = mcp_export {
+        let app2 = app.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            // Re-check under the lock: if MCP was disabled while this collect
+            // was in flight, set_mcp_enabled already deleted the file — don't
+            // resurrect it.
+            let still_enabled = app2
+                .state::<Mutex<AppState>>()
+                .lock()
+                .map(|g| g.settings.mcp_enabled)
+                .unwrap_or(false);
+            if still_enabled {
+                crate::mcp::write_snapshot(&app2, &export)
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("failed to write MCP snapshot: {e}"),
+            Err(e) => tracing::warn!("failed to write MCP snapshot: {e}"),
         }
     }
 

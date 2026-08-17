@@ -5,6 +5,11 @@ description = "Agent Usage Monitor — local CLI usage dashboard"
 edition = "2021"
 rust-version = "1.77"
 
+# The MCP sidecar is a separate, Tauri-free binary crate (see
+# crates/agent-status-mcp). The root package remains an implicit member.
+[workspace]
+members = ["crates/agent-status-mcp"]
+
 [lib]
 name = "agent_status_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -35,6 +40,7 @@ argon2 = "0.5"
 base64 = "0.22"
 sha2 = "0.10"
 machine-uid = "0.5"
+toml_edit = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

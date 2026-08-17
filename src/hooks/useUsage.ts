@@ -10,6 +10,7 @@ import type {
   CodexLoginInfo,
   GrokCliStatus,
   KimiCliStatus,
+  McpAgent,
   PlanKey,
   SettingsView,
   TooltipProvider,
@@ -37,6 +38,10 @@ export function useUsage() {
   const hiddenProvidersCmd = useTauriCommand<SettingsView>("set_hidden_providers");
   const autoRotateCmd = useTauriCommand<SettingsView>("set_auto_rotate");
   const rotateSecsCmd = useTauriCommand<SettingsView>("set_rotate_secs");
+  const mcpEnabledCmd = useTauriCommand<SettingsView>("set_mcp_enabled");
+  const mcpAgentsCmd = useTauriCommand<McpAgent[]>("get_mcp_agents");
+  const mcpRegisterCmd = useTauriCommand<McpAgent[]>("register_mcp_agent");
+  const mcpUnregisterCmd = useTauriCommand<McpAgent[]>("unregister_mcp_agent");
   const endpointCmd = useTauriCommand<SettingsView>("set_glm_endpoint");
   const setKeyCmd = useTauriCommand<SettingsView>("set_api_key");
   const clearKeyCmd = useTauriCommand<SettingsView>("clear_api_key");
@@ -289,6 +294,26 @@ export function useUsage() {
     [rotateSecsCmd],
   );
 
+  const setMcpEnabled = useCallback(
+    async (enabled: boolean) => {
+      const updated = await mcpEnabledCmd.execute({ enabled });
+      if (updated) setSettings(updated);
+    },
+    [mcpEnabledCmd],
+  );
+
+  const getMcpAgents = useCallback(() => mcpAgentsCmd.execute(), [mcpAgentsCmd]);
+
+  const registerMcpAgent = useCallback(
+    (id: string) => mcpRegisterCmd.execute({ id }),
+    [mcpRegisterCmd],
+  );
+
+  const unregisterMcpAgent = useCallback(
+    (id: string) => mcpUnregisterCmd.execute({ id }),
+    [mcpUnregisterCmd],
+  );
+
   const setGlmEndpoint = useCallback(
     async (endpoint: string) => {
       const updated = await endpointCmd.execute({ endpoint });
@@ -379,6 +404,10 @@ export function useUsage() {
     setHiddenProviders,
     setAutoRotate,
     setRotateSecs,
+    setMcpEnabled,
+    getMcpAgents,
+    registerMcpAgent,
+    unregisterMcpAgent,
     setGlmEndpoint,
     setApiKey,
     clearApiKey,

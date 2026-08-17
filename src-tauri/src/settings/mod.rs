@@ -63,6 +63,9 @@ pub struct Settings {
     pub auto_rotate: bool,
     /// Seconds each provider stays visible during auto-rotation (10–60).
     pub rotate_secs: u64,
+    /// Export a read-only usage snapshot (agent-snapshot.json) that AI coding
+    /// agents can query through the agent-status-mcp MCP server. Off by default.
+    pub mcp_enabled: bool,
 }
 
 impl Default for Settings {
@@ -84,6 +87,7 @@ impl Default for Settings {
             hidden_providers: Vec::new(),
             auto_rotate: false,
             rotate_secs: 10,
+            mcp_enabled: false,
         }
     }
 }
@@ -107,6 +111,7 @@ pub struct SettingsView {
     pub hidden_providers: Vec<String>,
     pub auto_rotate: bool,
     pub rotate_secs: u64,
+    pub mcp_enabled: bool,
 }
 
 impl From<&Settings> for SettingsView {
@@ -126,6 +131,7 @@ impl From<&Settings> for SettingsView {
             hidden_providers: s.hidden_providers.clone(),
             auto_rotate: s.auto_rotate,
             rotate_secs: s.rotate_secs,
+            mcp_enabled: s.mcp_enabled,
         }
     }
 }

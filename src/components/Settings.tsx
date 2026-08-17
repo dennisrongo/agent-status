@@ -2,13 +2,31 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import type { BailianCliStatus, ClaudeLoginInfo, CodexCliStatus, CodexLoginInfo, CopilotDeviceCode, GrokCliStatus, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CodexCliStatus, CodexLoginInfo, CopilotDeviceCode, GrokCliStatus, KimiCliStatus, KimiDeviceLogin, McpAgent, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
 /** Clickable info icon that opens a popover with help text. Stays open until
- * the user clicks outside — so they can follow multi-step instructions. */
-function InfoTip({ children }: { children: React.ReactNode }) {
+ * the user clicks outside — so they can follow multi-step instructions.
+ * With `label`, the trigger is a text button instead of the ⓘ icon (used for
+ * richer popovers like "Connect your agent"). */
+function InfoTip({ children, label }: { children: React.ReactNode; label?: string }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ up: false, right: false });
   const ref = useRef<HTMLSpanElement>(null);
+
+  const toggle = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!open && ref.current) {
+      // Flip the popover up / left when there isn't room below / right,
+      // otherwise it gets clipped by the scrollable settings body.
+      const r = ref.current.getBoundingClientRect();
+      setPos({
+        up: window.innerHeight - r.bottom < (label ? 380 : 240),
+        right: window.innerWidth - r.left < (label ? 360 : 320),
+      });
+    }
+    setOpen(!open);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -21,18 +39,24 @@ function InfoTip({ children }: { children: React.ReactNode }) {
 
   return (
     <span className="info-wrap" ref={ref}>
-      <button
-        className={`info-icon${open ? " open" : ""}`}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}
-        tabIndex={-1}
-        aria-label="More info"
-      >
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="8" cy="8" r="6.5" />
-          <path d="M8 7v3.5M8 5h.01" />
-        </svg>
-      </button>
-      {open && <span className="info-pop">{children}</span>}
+      {label ? (
+        <button className={`btn info-btn${open ? " open" : ""}`} onClick={toggle}>
+          {label}
+        </button>
+      ) : (
+        <button
+          className={`info-icon${open ? " open" : ""}`}
+          onClick={toggle}
+          tabIndex={-1}
+          aria-label="More info"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="6.5" />
+            <path d="M8 7v3.5M8 5h.01" />
+          </svg>
+        </button>
+      )}
+      {open && <span className={`info-pop${label ? " wide" : ""}${pos.up ? " up" : ""}${pos.right ? " right" : ""}`}>{children}</span>}
     </span>
   );
 }
@@ -60,6 +84,10 @@ interface Props {
   setHiddenProviders: (providers: string[]) => Promise<void>;
   setAutoRotate: (enabled: boolean) => Promise<void>;
   setRotateSecs: (secs: number) => Promise<void>;
+  setMcpEnabled: (enabled: boolean) => Promise<void>;
+  getMcpAgents: () => Promise<McpAgent[] | null>;
+  registerMcpAgent: (id: string) => Promise<McpAgent[] | null>;
+  unregisterMcpAgent: (id: string) => Promise<McpAgent[] | null>;
   copilotConnected: boolean;
   connectCopilotStart: () => Promise<CopilotDeviceCode | null>;
   copilotPoll: () => Promise<string | null>;
@@ -176,6 +204,10 @@ export function Settings({
   setHiddenProviders,
   setAutoRotate,
   setRotateSecs,
+  setMcpEnabled,
+  getMcpAgents,
+  registerMcpAgent,
+  unregisterMcpAgent,
   copilotConnected,
   connectCopilotStart,
   copilotPoll,
@@ -387,6 +419,32 @@ export function Settings({
         </label>
       </div>
 
+      <div className="group-head">AI agents (MCP)</div>
+      <div className="sec-head">
+        <h2>Expose usage to agents</h2>
+        <span className="meta">{settings.mcpEnabled ? "on" : "off"}</span>
+      </div>
+      <div className="key-row">
+        <label className="toggle-row">
+          <span>
+            <span className="key-label">Expose usage data to agents (MCP)<InfoTip>Writes a read-only usage snapshot to disk that AI coding agents can query via the agent-status MCP server — 5-hour and weekly capacity across your providers. No secrets are included.</InfoTip></span>
+          </span>
+          <input
+            type="checkbox"
+            className="toggle"
+            checked={settings.mcpEnabled}
+            onChange={(e) => setMcpEnabled(e.target.checked)}
+          />
+        </label>
+      </div>
+      {settings.mcpEnabled && (
+        <McpAgents
+          getAgents={getMcpAgents}
+          register={registerMcpAgent}
+          unregister={unregisterMcpAgent}
+        />
+      )}
+
       <div className="group-head">Providers</div>
 
       <div className="sec-head">
@@ -587,6 +645,148 @@ export function Settings({
 }
 
 // Snap a stored interval to the nearest preset so the select always shows a value.
+function McpAgents({
+  getAgents,
+  register,
+  unregister,
+}: {
+  getAgents: () => Promise<McpAgent[] | null>;
+  register: (id: string) => Promise<McpAgent[] | null>;
+  unregister: (id: string) => Promise<McpAgent[] | null>;
+}) {
+  const [agents, setAgents] = useState<McpAgent[] | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const getRef = useRef(getAgents);
+  getRef.current = getAgents;
+
+  useEffect(() => {
+    (async () => {
+      const list = await getRef.current();
+      if (list) {
+        setAgents(list);
+      } else {
+        setMsg("Couldn't read agent configs — the get_mcp_agents command failed.");
+        setAgents([]);
+      }
+    })();
+  }, []);
+
+  const act = async (id: string, fn: (id: string) => Promise<McpAgent[] | null>) => {
+    setMsg(null);
+    setBusyId(id);
+    const list = await fn(id);
+    setBusyId(null);
+    if (list) {
+      setAgents(list);
+    } else {
+      setMsg("Action failed — build the MCP binary (npm run build:mcp) or check the agent's config file.");
+    }
+  };
+
+  const EXAMPLE_PROMPT =
+    "Use the agent-status MCP server's get_capacity tool to check which provider has the most 5-hour headroom before we start.";
+
+  // Paste-in block a user can hand to ANY agent (even one not in the list
+  // above) so it can register and use the server on its own.
+  const commandPath = agents?.find((a) => a.commandPath)?.commandPath ?? null;
+  const AGENT_INSTRUCTIONS = commandPath
+    ? [
+        "I use the agent-status MCP server to track my AI provider capacity (5-hour and weekly quota windows across Claude, Z.ai, Copilot, Alibaba, Kimi, Grok, and Codex). Connect to it:",
+        "",
+        `Command: ${commandPath}`,
+        "Args: (none) — it speaks MCP over stdio.",
+        "",
+        "Register it in your MCP config, e.g.:",
+        `  Claude Code: claude mcp add agent-status -- "${commandPath}"`,
+        `  JSON config: {"mcpServers":{"agent-status":{"command":"${commandPath.replace(/\\/g, "\\\\")}","args":[]}}}`,
+        '  TOML config: [mcp_servers.agent-status]  command = "' + commandPath.replace(/\\/g, "\\\\") + '"',
+        "",
+        "Once connected, call the get_capacity tool before starting long tasks to pick the provider with the most 5-hour headroom, and get_provider_status(provider) for one provider's detail. The server is read-only; data is a cached snapshot written by the Agent Usage Monitor app (up to ~5 min old while the app is hidden).",
+      ].join("\n")
+    : null;
+
+  const [copiedWhat, setCopiedWhat] = useState<string | null>(null);
+  const copyText = async (what: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedWhat(what);
+      setTimeout(() => setCopiedWhat(null), 1500);
+    } catch {
+      setMsg("Couldn't copy to the clipboard.");
+    }
+  };
+
+  if (!agents) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub">Checking agent configs…</span>
+      </div>
+    );
+  }
+
+  const statusOf = (a: McpAgent): string =>
+    !a.detected ? "not detected" : a.registered ? "registered" : "not registered";
+
+  return (
+    <>
+      {agents.map((a) => (
+        <div className="key-row" key={a.id}>
+          <label className="toggle-row">
+            <span>
+              <span className="key-label">{a.name}<InfoTip>Config file: {a.configPath}</InfoTip></span>
+              <span className="connect-sub" style={{ margin: "2px 0 0" }}>
+                {busyId === a.id ? "updating…" : !a.commandPath && a.detected ? "MCP binary not found — run npm run build:mcp" : statusOf(a)}
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              className="toggle"
+              checked={a.registered}
+              disabled={busyId === a.id || !a.detected || (!a.registered && !a.commandPath)}
+              onChange={(e) => act(a.id, e.target.checked ? register : unregister)}
+            />
+          </label>
+        </div>
+      ))}
+      {msg && (
+        <div className="key-row">
+          <span className="connect-sub" style={{ margin: "0", color: "var(--danger, #e06c75)" }}>{msg}</span>
+        </div>
+      )}
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Connect your agent</span>
+          <InfoTip label="How to connect">
+            1. Enable an agent with its toggle above.<br />
+            2. Restart the agent — most agents launch MCP servers at startup.<br />
+            3. Then ask the agent:
+            <div style={{ marginTop: 8 }}>
+              <div className="key-top">
+                <span className="mcp-code-head">Example prompt</span>
+                <button className="btn" onClick={() => copyText("prompt", EXAMPLE_PROMPT)}>{copiedWhat === "prompt" ? "Copied" : "Copy"}</button>
+              </div>
+              <code className="mcp-code">{EXAMPLE_PROMPT}</code>
+            </div>
+            {AGENT_INSTRUCTIONS && (
+              <div style={{ marginTop: 10 }}>
+                <div className="key-top">
+                  <span className="mcp-code-head">Agent instructions — paste to any agent so it can connect itself</span>
+                  <button className="btn" onClick={() => copyText("agent", AGENT_INSTRUCTIONS)}>{copiedWhat === "agent" ? "Copied" : "Copy"}</button>
+                </div>
+                <code className="mcp-code" style={{ maxHeight: 140 }}>{AGENT_INSTRUCTIONS}</code>
+              </div>
+            )}
+            <div style={{ margin: "8px 0 0", color: "var(--faint)" }}>
+              The server is read-only and serves a cached snapshot — up to ~5 min old while the app is hidden.
+            </div>
+          </InfoTip>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function snapToPreset(options: { secs: number }[], secs: number): number {
   return options.reduce((best, o) =>
     Math.abs(o.secs - secs) < Math.abs(best.secs - secs) ? o : best,

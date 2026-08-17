@@ -40,6 +40,7 @@ const mockSettings: SettingsView = {
   hiddenProviders: [],
   autoRotate: false,
   rotateSecs: 10,
+  mcpEnabled: false,
 };
 
 function makeSnapshot(genMs: number): UsageSnapshot {

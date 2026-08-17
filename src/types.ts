@@ -262,4 +262,15 @@ export interface SettingsView {
   hiddenProviders: string[];
   autoRotate: boolean;
   rotateSecs: number;
+  mcpEnabled: boolean;
+}
+
+/** One AI agent the agent-status MCP server can be registered with. */
+export interface McpAgent {
+  id: string;
+  name: string;
+  detected: boolean;
+  registered: boolean;
+  configPath: string;
+  commandPath: string | null;
 }

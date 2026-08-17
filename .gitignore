@@ -9,6 +9,7 @@ dist-ssr/
 # Tauri / Rust
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/binaries/
 
 # Environment / secrets
 .env

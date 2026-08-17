@@ -44,6 +44,10 @@ export default function App() {
     setHiddenProviders,
     setAutoRotate,
     setRotateSecs,
+    setMcpEnabled,
+    getMcpAgents,
+    registerMcpAgent,
+    unregisterMcpAgent,
     reloadSettings,
     connectCopilotStart,
     copilotPoll,
@@ -661,6 +665,10 @@ export default function App() {
             setHiddenProviders={setHiddenProviders}
             setAutoRotate={setAutoRotate}
             setRotateSecs={setRotateSecs}
+            setMcpEnabled={setMcpEnabled}
+            getMcpAgents={getMcpAgents}
+            registerMcpAgent={registerMcpAgent}
+            unregisterMcpAgent={unregisterMcpAgent}
             copilotConnected={settings.copilotConnected}
             connectCopilotStart={connectCopilotStart}
             copilotPoll={copilotPoll}

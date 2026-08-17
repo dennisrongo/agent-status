@@ -44,6 +44,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/agent-status-mcp"],
     "category": "DeveloperTool",
     "copyright": "© 2026 Lean Code Automation LLC",
     "shortDescription": "Menubar widget for AI coding agent usage.",
