@@ -1581,9 +1581,11 @@ fn scan_codex(
     Option<CodexRateSnap>,
 ) {
     let mut files: Vec<PathBuf> = Vec::new();
+    // glob treats `/` as the separator on every OS — normalize so a Windows
+    // `C:\Users\…\.codex` root still matches `sessions\YYYY\MM\DD\*.jsonl`.
     for pattern in [
-        format!("{}/sessions/**/*.jsonl", root.to_string_lossy()),
-        format!("{}/archived_sessions/*.jsonl", root.to_string_lossy()),
+        glob_under(root, "sessions/**/*.jsonl"),
+        glob_under(root, "archived_sessions/*.jsonl"),
     ] {
         if let Ok(paths) = glob::glob(&pattern) {
             files.extend(paths.filter_map(Result::ok));
@@ -1926,6 +1928,14 @@ fn usage_tokens(u: Option<&Value>) -> Option<u64> {
 
 fn short_model(name: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
+}
+
+/// Build a glob pattern under `root`. The `glob` crate wants `/` even on
+/// Windows, so we never interpolate `Path`'s native separators raw.
+fn glob_under(root: &Path, rel: &str) -> String {
+    let base = root.to_string_lossy().replace('\\', "/");
+    let rel = rel.replace('\\', "/").trim_start_matches('/').to_string();
+    format!("{base}/{rel}")
 }
 
 fn date_from_codex_path(path: &Path) -> Option<DateTime<Utc>> {
@@ -3436,5 +3446,14 @@ mod tests {
             .expect("week");
         assert!(week.windows.is_empty());
         assert_eq!(week.days.len(), 7);
+    }
+
+    #[test]
+    fn glob_under_normalizes_windows_separators() {
+        let p = PathBuf::from(r"C:\Users\test\.codex");
+        assert_eq!(
+            glob_under(&p, r"sessions\**\*.jsonl"),
+            "C:/Users/test/.codex/sessions/**/*.jsonl"
+        );
     }
 }

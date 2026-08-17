@@ -1578,7 +1578,9 @@ pub fn codex_login_start(app: AppHandle) -> Result<codex::LoginInfo, String> {
     let _ = stop_pending_codex_login(&app);
     let start = codex::begin_login()?;
     let port = start
-        .listener
+        .listeners
+        .first()
+        .ok_or("login listener missing")?
         .local_addr()
         .map_err(|e| format!("listener: {e}"))?
         .port();
@@ -1599,12 +1601,12 @@ pub fn codex_login_start(app: AppHandle) -> Result<codex::LoginInfo, String> {
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
         });
     }
-    let listener = start.listener;
+    let listeners = start.listeners;
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let wait = tokio::task::spawn_blocking(move || {
             codex::wait_for_callback(
-                listener,
+                listeners,
                 &state,
                 &cancel,
                 std::time::Duration::from_secs(10 * 60),

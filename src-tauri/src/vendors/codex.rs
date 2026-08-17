@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{Ipv6Addr, TcpListener};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -444,7 +444,17 @@ fn build_refreshed_credentials(
 
 fn write_credentials_file(json: &str) -> Result<(), String> {
     let path = credentials_path().ok_or("no home directory for Codex credentials")?;
-    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // Match the CLI: owner-only on Unix. Windows ACLs follow the creating user.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn npm_command() -> std::process::Command {
@@ -456,10 +466,32 @@ fn npm_command() -> std::process::Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = std::process::Command::new("npm");
+        let npm = find_npm_unix().unwrap_or_else(|| PathBuf::from("npm"));
+        let mut cmd = std::process::Command::new(npm);
         cmd.silent();
         cmd
     }
+}
+
+/// GUI apps (menubar / dock) often inherit a stripped PATH that does not
+/// include Homebrew or nvm. Look in the usual Unix install spots.
+#[cfg(not(target_os = "windows"))]
+fn find_npm_unix() -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("npm");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for p in ["/opt/homebrew/bin/npm", "/usr/local/bin/npm", "/usr/bin/npm"] {
+        let candidate = PathBuf::from(p);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn npm_global_prefix() -> Option<PathBuf> {
@@ -479,49 +511,64 @@ fn npm_global_prefix() -> Option<PathBuf> {
 }
 
 /// Locate the `codex` CLI. PATH first, then `$CODEX_HOME/bin`, then the npm
-/// global prefix (the usual `npm i -g @openai/codex` install).
+/// global prefix (the usual `npm i -g @openai/codex` install), then the
+/// well-known GUI-app fallbacks (Homebrew, `%APPDATA%\npm`) that a menubar
+/// process often does not inherit via PATH.
 pub fn find_cli() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     const NAMES: &[&str] = &["codex.exe", "codex.cmd"];
     #[cfg(not(target_os = "windows"))]
     const NAMES: &[&str] = &["codex"];
 
+    let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            for name in NAMES {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
+        dirs.extend(std::env::split_paths(&paths));
     }
-
     if let Some(home) = codex_home() {
-        for name in NAMES {
-            let candidate = home.join("bin").join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+        dirs.push(home.join("bin"));
     }
-
     if let Some(base) = npm_global_prefix() {
+        dirs.push(base.clone());
+        #[cfg(not(target_os = "windows"))]
+        dirs.push(base.join("bin"));
+    }
+    dirs.extend(extra_cli_dirs());
+
+    for dir in dirs {
         for name in NAMES {
-            let candidate = base.join(name);
+            let candidate = dir.join(name);
             if candidate.is_file() {
                 return Some(candidate);
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let bin = base.join("bin");
-            if bin.join("codex").is_file() {
-                return Some(bin.join("codex"));
             }
         }
     }
     None
+}
+
+fn extra_cli_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(pf) = std::env::var_os("ProgramFiles") {
+            dirs.push(PathBuf::from(pf).join("nodejs"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        dirs.push(PathBuf::from("/usr/local/bin"));
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".local").join("bin"));
+        }
+    }
+    dirs
 }
 
 pub fn cli_on_path() -> bool {
@@ -591,7 +638,10 @@ pub struct LoginStart {
     pub verifier: String,
     pub state: String,
     pub redirect_uri: String,
-    pub listener: TcpListener,
+    /// IPv4 and/or IPv6 loopback listeners on the same port. Browsers resolve
+    /// `localhost` to either `127.0.0.1` or `::1` (Windows especially prefers
+    /// IPv6), so we accept on both families when the OS allows it.
+    pub listeners: Vec<TcpListener>,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -647,11 +697,7 @@ fn urldecode(s: &str) -> String {
 
 /// Bind the Codex-registered loopback port and build the authorize URL.
 pub fn begin_login() -> Result<LoginStart, String> {
-    let listener = bind_callback_port()?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("listener addr: {e}"))?
-        .port();
+    let (port, listeners) = bind_callback_port()?;
     let redirect_uri = format!("http://localhost:{port}/auth/callback");
     let verifier = random_b64url(64);
     let state = random_b64url(32);
@@ -670,16 +716,28 @@ pub fn begin_login() -> Result<LoginStart, String> {
         verifier,
         state,
         redirect_uri,
-        listener,
+        listeners,
         cancel: Arc::new(AtomicBool::new(false)),
     })
 }
 
-fn bind_callback_port() -> Result<TcpListener, String> {
+fn bind_nb<A: std::net::ToSocketAddrs>(addr: A) -> Option<TcpListener> {
+    let l = TcpListener::bind(addr).ok()?;
+    l.set_nonblocking(true).ok()?;
+    Some(l)
+}
+
+fn bind_callback_port() -> Result<(u16, Vec<TcpListener>), String> {
     for port in [CALLBACK_PORT, CALLBACK_PORT_FALLBACK] {
-        if let Ok(l) = TcpListener::bind(("127.0.0.1", port)) {
-            let _ = l.set_nonblocking(true);
-            return Ok(l);
+        let mut listeners = Vec::new();
+        if let Some(l) = bind_nb(("127.0.0.1", port)) {
+            listeners.push(l);
+        }
+        if let Some(l) = bind_nb((Ipv6Addr::LOCALHOST, port)) {
+            listeners.push(l);
+        }
+        if !listeners.is_empty() {
+            return Ok((port, listeners));
         }
     }
     Err("Could not bind the Codex login port (1455 / 1457). Close another Codex login and try again.".into())
@@ -727,7 +785,7 @@ fn parse_callback_request(first_line: &str) -> CallbackReq {
 
 /// Block until the browser hits the loopback callback (or cancel / timeout).
 pub fn wait_for_callback(
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     expected_state: &str,
     cancel: &AtomicBool,
     timeout: Duration,
@@ -740,37 +798,49 @@ pub fn wait_for_callback(
         if start.elapsed() >= timeout {
             return Err("Sign-in timed out — try again.".into());
         }
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let first = req.lines().next().unwrap_or("");
-                match parse_callback_request(first) {
-                    CallbackReq::Code { code, state } => {
-                        let body = b"<html><body><p>Signed in to Codex. You can close this tab.</p></body></html>";
-                        let _ = write_http(&mut stream, 200, "text/html; charset=utf-8", body);
-                        if state != expected_state {
-                            return Err("That sign-in is from a different attempt — start again.".into());
+        let mut blocked = 0usize;
+        for listener in &listeners {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    // Accepted sockets inherit non-blocking on some platforms
+                    // (notably Windows). Flip to blocking with a short read
+                    // timeout so we wait for the request line instead of
+                    // treating WouldBlock as an empty GET.
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let first = req.lines().next().unwrap_or("");
+                    match parse_callback_request(first) {
+                        CallbackReq::Code { code, state } => {
+                            let body = b"<html><body><p>Signed in to Codex. You can close this tab.</p></body></html>";
+                            let _ = write_http(&mut stream, 200, "text/html; charset=utf-8", body);
+                            if state != expected_state {
+                                return Err("That sign-in is from a different attempt — start again.".into());
+                            }
+                            if code.is_empty() {
+                                return Err("No authorization code in the callback.".into());
+                            }
+                            return Ok(code);
                         }
-                        if code.is_empty() {
-                            return Err("No authorization code in the callback.".into());
+                        CallbackReq::Cancel => {
+                            let _ = write_http(&mut stream, 200, "text/plain", b"cancelled");
+                            return Err("Sign-in cancelled.".into());
                         }
-                        return Ok(code);
-                    }
-                    CallbackReq::Cancel => {
-                        let _ = write_http(&mut stream, 200, "text/plain", b"cancelled");
-                        return Err("Sign-in cancelled.".into());
-                    }
-                    CallbackReq::Ignore => {
-                        let _ = write_http(&mut stream, 404, "text/plain", b"not found");
+                        CallbackReq::Ignore => {
+                            let _ = write_http(&mut stream, 404, "text/plain", b"not found");
+                        }
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    blocked += 1;
+                }
+                Err(e) => return Err(format!("login listener: {e}")),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(150));
-            }
-            Err(e) => return Err(format!("login listener: {e}")),
+        }
+        if blocked == listeners.len() {
+            std::thread::sleep(Duration::from_millis(150));
         }
     }
 }
@@ -792,9 +862,15 @@ fn write_http(stream: &mut impl Write, status: u16, ctype: &str, body: &[u8]) ->
 
 /// Wake a waiting listener so cancel returns promptly.
 pub fn cancel_login(port: u16) {
-    if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-        let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
-        let _ = s.write_all(b"GET /cancel HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = b"GET /cancel HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    for addr in [
+        std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::net::SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ] {
+        if let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
+            let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
+            let _ = s.write_all(req);
+        }
     }
 }
 
@@ -920,7 +996,7 @@ pub fn logout() -> Result<String, String> {
     let raw = std::fs::read_to_string(&path)
         .map_err(|_| "No Codex login found — already signed out.".to_string())?;
     let tombstone = build_logout_tombstone(&raw)?;
-    std::fs::write(&path, tombstone).map_err(|e| format!("write {}: {e}", path.display()))?;
+    write_credentials_file(&tombstone)?;
     Ok("Disconnected from Codex.".to_string())
 }
 
@@ -1583,7 +1659,20 @@ mod tests {
         assert!(start.url.contains("code_challenge_method=S256"));
         assert!(start.url.contains("redirect_uri="));
         assert!(start.redirect_uri.contains("/auth/callback"));
+        assert!(start.redirect_uri.starts_with("http://localhost:"));
+        assert!(!start.listeners.is_empty());
         assert!(!start.verifier.is_empty());
         assert!(!start.state.is_empty());
+    }
+
+    #[test]
+    fn extra_cli_dirs_are_platform_specific() {
+        let dirs = extra_cli_dirs();
+        #[cfg(target_os = "windows")]
+        assert!(dirs.iter().any(|d| d.ends_with("npm") || d.ends_with("nodejs")));
+        #[cfg(target_os = "macos")]
+        assert!(dirs.iter().any(|d| d.ends_with("bin")));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert!(dirs.iter().any(|d| d.ends_with("bin")));
     }
 }
