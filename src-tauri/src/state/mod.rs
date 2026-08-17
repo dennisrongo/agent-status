@@ -69,6 +69,25 @@ impl PendingClaudeLogin {
     }
 }
 
+/// An in-progress in-app Codex ChatGPT OAuth login. The PKCE verifier and
+/// loopback port stay here so cancel can wake the listener; secrets never
+/// round-trip through the UI.
+#[derive(Clone)]
+pub struct PendingCodexLogin {
+    pub verifier: String,
+    pub state: String,
+    pub redirect_uri: String,
+    pub port: u16,
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl PendingCodexLogin {
+    pub fn is_valid(&self, now: DateTime<Utc>) -> bool {
+        now < self.expires_at
+    }
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub snapshot: Option<UsageSnapshot>,
@@ -77,6 +96,8 @@ pub struct AppState {
     pub pending_copilot_device: Option<PendingDevice>,
     /// In-flight in-app Claude OAuth login, if any.
     pub pending_claude_login: Option<PendingClaudeLogin>,
+    /// In-flight in-app Codex ChatGPT OAuth login, if any.
+    pub pending_codex_login: Option<PendingCodexLogin>,
     /// Last *successful* live Claude meters. The `/usage` endpoint rate-limits
     /// aggressively when polled, so a failed refresh reuses this instead of
     /// swapping in the local estimate — which is on a different scale and would
@@ -131,6 +152,11 @@ pub struct AppState {
     /// dead refresh token isn't retried more than once per
     /// `GROK_REFRESH_MIN_SECS`.
     pub grok_refresh_attempted_at: Option<DateTime<Utc>>,
+    /// When an automatic Codex token *refresh* was last attempted. Codex
+    /// access tokens last a few hours and the CLI only renews them while it
+    /// runs; a dead refresh token isn't retried more than once per
+    /// `CODEX_REFRESH_MIN_SECS`.
+    pub codex_refresh_attempted_at: Option<DateTime<Utc>>,
     /// Last *successful* z.ai 7-day model-usage reading. The payload is large
     /// (hourly buckets for a week) and the totals move slowly, so it's fetched
     /// at most once per `GLM_WEEK_MIN_SECS` and the cached reading is served in
@@ -185,6 +211,10 @@ pub const KIMI_REFRESH_MIN_SECS: i64 = 60;
 /// `KIMI_REFRESH_MIN_SECS`.
 pub const GROK_REFRESH_MIN_SECS: i64 = 60;
 
+/// Minimum seconds between automatic Codex token-refresh attempts. Mirrors
+/// `GROK_REFRESH_MIN_SECS`.
+pub const CODEX_REFRESH_MIN_SECS: i64 = 60;
+
 /// Longest a cached Copilot reading is served while live fetches keep failing.
 /// Short blips ride on the cache; beyond this the card admits it can't refresh
 /// rather than presenting an increasingly stale quota (or a window that has
@@ -213,6 +243,7 @@ impl AppState {
             settings,
             pending_copilot_device: None,
             pending_claude_login: None,
+            pending_codex_login: None,
             live_claude_buckets: None,
             live_claude_attempted_at: None,
             live_claude_refresh_attempted_at: None,
@@ -224,6 +255,7 @@ impl AppState {
             alibaba_attempted_at: None,
             kimi_refresh_attempted_at: None,
             grok_refresh_attempted_at: None,
+            codex_refresh_attempted_at: None,
             glm_week_last_good: None,
             glm_week_last_good_at: None,
             glm_week_attempted_at: None,

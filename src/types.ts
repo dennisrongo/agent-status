@@ -68,7 +68,7 @@ export interface SessionRow {
   tokens: number;
   cost: number;
   when: string;
-  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok";
+  provider: "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex";
   /** Pre-rendered by Rust — "1.2M", or "—" when the provider records no count. */
   tokensText: string;
   /** Pre-rendered by Rust — dollars, premium requests, or "—". */
@@ -120,6 +120,7 @@ export interface VendorReport {
   alibaba: VendorStatus;
   kimi: VendorStatus;
   grok: VendorStatus;
+  codex: VendorStatus;
 }
 
 /** z.ai "Last 7 days" view, fetched from the monitor `model-usage` endpoint.
@@ -145,6 +146,20 @@ export interface GrokWeek {
   last: string;
 }
 
+/** Local Codex CLI token totals for the OpenAI Overview. Plus/Pro has no
+ *  public dollar rate, so cost is always an em dash. */
+export interface CodexWeek {
+  days: WeekDay[];
+  models: ModelRow[];
+  sessionTokens: string;
+  weekTokens: string;
+  totalTokens: string;
+  sessions: number;
+  last: string;
+  /** Last 5-hour / weekly % captured from a session `rate_limits` snapshot. */
+  windows?: VendorKeyVal[];
+}
+
 export interface Detection {
   claude: boolean;
   glm: boolean;
@@ -152,6 +167,7 @@ export interface Detection {
   alibaba: boolean;
   kimi: boolean;
   grok: boolean;
+  codex: boolean;
   /** A Claude Code OAuth login is present on this machine (independent of the
    * live toggle). Drives the connect/disconnect control. */
   claudeSignedIn: boolean;
@@ -174,6 +190,8 @@ export interface UsageSnapshot {
   glmWeek?: GlmWeek;
   /** Present when local Grok CLI session logs were found. */
   grokWeek?: GrokWeek;
+  /** Present when local Codex CLI session logs were found. */
+  codexWeek?: CodexWeek;
   detection?: Detection;
 }
 
@@ -206,6 +224,15 @@ export interface GrokCliStatus {
   authenticated: boolean;
 }
 
+export interface CodexCliStatus {
+  installed: boolean;
+  authenticated: boolean;
+}
+
+export interface CodexLoginInfo {
+  authorizeUrl: string;
+}
+
 /** Device-flow details pushed via the `kimi-login-device` event while a
  * `kimi login` is in flight — the Settings UI shows the code so the user can
  * complete the login even if the browser didn't open. */
@@ -216,7 +243,7 @@ export interface KimiDeviceLogin {
 
 export type PlanKey = "pro" | "max5x" | "max20x" | "custom";
 
-export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok";
+export type TooltipProvider = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex";
 
 export type WindowMode = "dock" | "float";
 

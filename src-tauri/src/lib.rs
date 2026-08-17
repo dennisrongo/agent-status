@@ -145,6 +145,11 @@ pub fn run() {
             commands::install_grok_cli,
             commands::grok_cli_login,
             commands::grok_cli_logout,
+            commands::codex_cli_status,
+            commands::install_codex_cli,
+            commands::codex_login_start,
+            commands::codex_login_cancel,
+            commands::codex_cli_logout,
             commands::open_url,
             commands::restart_after_update,
         ])

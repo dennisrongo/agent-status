@@ -6,7 +6,7 @@
 
 ### A lightweight **menubar widget** that tracks your AI coding agent usage in real time.
 
-Per-provider usage · live vendor quota · token spend · cost estimates · session history — for coding agents from **Anthropic, Z.ai, GitHub, Alibaba, Moonshot, and xAI** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
+Per-provider usage · live vendor quota · token spend · cost estimates · session history — for coding agents from **Anthropic, Z.ai, GitHub, Alibaba, Moonshot, xAI, and Codex** — all read from local logs and live APIs, refreshed on a timer, living quietly in your menu bar.
 
 <br/>
 
@@ -27,8 +27,8 @@ Per-provider usage · live vendor quota · token spend · cost estimates · sess
 
 ## ✨ Features
 
-### One widget, six providers
-A segmented Overview switches between **Anthropic, Z.ai, GitHub, Alibaba, Moonshot, and xAI** — each with its own usage meters and a live reset countdown.
+### One widget, seven providers
+A segmented Overview switches between **Anthropic, Z.ai, GitHub, Alibaba, Moonshot, xAI, and Codex** — each with its own usage meters and a live reset countdown.
 
 ### The data
 - **Real token counts.** Exact per-request tokens parsed straight from **Claude Code's session logs** (input, output, cache read/write) and **GLM server activity** from local MCP logs; Copilot and Bailian report live quota straight from their APIs.
@@ -36,7 +36,7 @@ A segmented Overview switches between **Anthropic, Z.ai, GitHub, Alibaba, Moonsh
 - **7-day spark chart** + all-time model breakdown + recent-session history, spanning every provider.
 
 ### Live vendor data (optional)
-Connect any provider for real-time quota and usage — **Claude Code** (in-app OAuth sign-in), **GLM/z.ai** (API key), **GitHub Copilot** (device-flow OAuth), **Alibaba Bailian** (Bailian CLI), **Kimi Code** (reads the Kimi Code CLI login), or **xAI** (reads the Grok CLI login). All secrets are stored **encrypted and machine-bound**.
+Connect any provider for real-time quota and usage — **Claude Code** (in-app OAuth sign-in), **GLM/z.ai** (API key), **GitHub Copilot** (device-flow OAuth), **Alibaba Bailian** (Bailian CLI), **Kimi Code** (reads the Kimi Code CLI login), **xAI** (reads the Grok CLI login), or **Codex** (reads the Codex CLI login). All secrets are stored **encrypted and machine-bound**.
 
 ### Always current
 A Rust timer re-scans and pushes fresh data to the UI — **auto-refresh interval is configurable in Settings (default 30s)**, applied live without a restart. No frozen snapshots.
@@ -161,9 +161,22 @@ Each provider reports different things. Local data comes from parsing logs on di
 
 > Access tokens last a few hours. An expired login is **renewed in place** from the Grok CLI’s `auth.json` (SpaceXAI OIDC only — `auth.x.ai`) and written back to that file. Only a dead refresh token asks you to run `grok login` again.
 
+### Codex
+
+| Metric | Source | Real? |
+| --- | --- | --- |
+| 5-hour / weekly quota | `GET https://chatgpt.com/backend-api/wham/usage` via the Codex CLI ChatGPT login | ✅ real (per-user) |
+| Extra model limits (e.g. Spark) | same payload (`additional_rate_limits[]`) | ✅ real when present |
+| Token spend (5h / 7d / session) | `$CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl` (`event_msg` / `token_count`) | ✅ exact, per turn |
+| Session rows (project / model / tokens) | same store + `archived_sessions/*.jsonl` | ✅ exact when `last_token_usage` was written; otherwise last `total_token_usage` |
+
+> `turn_context` is the model source when both it and a token-count row are present. Subagent rollouts are skipped so they aren't double-counted with the parent session. Cost is always `—` (Plus / Pro is a subscription). Honor `$CODEX_HOME` (default `~/.codex`).
+
+> Sign in from Settings with **in-app ChatGPT OAuth** (the same `codex login` flow). The Codex CLI is optional — install it from Settings if you also want local session rows. Access tokens last a few hours and are **renewed in place** in `auth.json`. Only a dead refresh token asks you to reconnect.
+
 ### Sessions ("Recent activity")
 
-Rows come from every CLI that keeps a local session log — Anthropic, Moonshot, xAI, and GitHub — interleaved by recency. **Z.ai contributes real per-hour rows** from the Z.ai monitor API (`/api/monitor/usage/model-usage`) when an API key is set — one row per active hour with tokens, call count, and the dominant model, covering activity from any machine, not just this one. Without a key it falls back to a single summary row from the local MCP logs. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own.
+Rows come from every CLI that keeps a local session log — Anthropic, Moonshot, xAI, Codex, and GitHub — interleaved by recency. **Z.ai contributes real per-hour rows** from the Z.ai monitor API (`/api/monitor/usage/model-usage`) when an API key is set — one row per active hour with tokens, call count, and the dominant model, covering activity from any machine, not just this one. Without a key it falls back to a single summary row from the local MCP logs. **Alibaba contributes no rows**: `bl` is a one-shot API client with no session store, and when it's wired into another coding agent that agent's logs are indistinguishable from its own.
 
 Anything a provider doesn't record locally shows `—` rather than a zero.
 
@@ -198,8 +211,8 @@ notarization credentials, verification, universal builds, troubleshooting).
 ## ⚙️ Configuration
 
 - **Auto-refresh interval** — choose 10s / 15s / 30s / 1m / 2m / 5m in Settings (default **30s**); takes effect on the next cycle.
-- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (Z.ai / GitHub / Alibaba / Moonshot / xAI) report their own limits regardless.
-- **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** or **Grok CLI** — all from inside the app (Grok’s official Windows/macOS binary lands in `$GROK_HOME/bin`). **Kimi Code** and **xAI** also pick up the matching CLI login (`kimi login` / `grok login`) automatically; Settings can launch that flow.
+- **Plan tier** — pick Pro / Max 5× / Max 20× from the header dropdown; it sets the **local-estimate** ceilings for Claude and persists. Live providers (Z.ai / GitHub / Alibaba / Moonshot / xAI / Codex) report their own limits regardless.
+- **Connect providers** (Settings tab) — sign into **Claude Code** (OAuth), connect **GitHub Copilot** (device-flow OAuth), or install + log into the **Alibaba Bailian CLI** or **Grok CLI** — all from inside the app (Grok’s official Windows/macOS binary lands in `$GROK_HOME/bin`). **Kimi Code**, **xAI**, and **Codex** also pick up the matching CLI login (`kimi login` / `grok login` / `codex login`) automatically; Settings can launch that flow.
 - **API keys** (Settings tab) — optional **z.ai** and **Anthropic admin** (`sk-ant-admin…`) keys for live vendor data. (The Anthropic admin key reports org-level cost and is separate from your Claude Code subscription quota.)
 - **z.ai endpoint** — editable; confirm it against your account's billing API.
 - **Overview providers** — hide or show individual providers on the Overview; pick which one the **tray hover popover** shows.
@@ -223,7 +236,7 @@ agent-status/
     └── src/
         ├── commands/         # invoke handlers (collect = scan + vendor)
         ├── scanner/          # log → UsageSnapshot aggregation
-        ├── vendors/          # claude · glm · anthropic · copilot · alibaba · kimi · grok
+        ├── vendors/          # claude · glm · anthropic · copilot · alibaba · kimi · grok · codex
         ├── encryption/       # at-rest key vault
         ├── settings/ state/ storage/
         └── tray.rs           # menubar icon + dropdown

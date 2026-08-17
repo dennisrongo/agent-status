@@ -5,6 +5,7 @@
 pub mod alibaba;
 pub mod anthropic;
 pub mod claude;
+pub mod codex;
 pub mod copilot;
 pub mod glm;
 pub mod grok;
@@ -114,6 +115,7 @@ pub struct VendorReport {
     pub alibaba: VendorStatus,
     pub kimi: VendorStatus,
     pub grok: VendorStatus,
+    pub codex: VendorStatus,
 }
 
 /// Which providers are actually present on this machine, so the UI can hide the
@@ -129,6 +131,8 @@ pub struct VendorReport {
 ///   `kimi` CLI is on PATH.
 /// - `grok`: a Grok CLI OAuth login exists (`~/.grok/auth.json`), the `grok`
 ///   CLI is on PATH, or local session logs were found.
+/// - `codex`: a Codex CLI OAuth login exists (`~/.codex/auth.json`), the
+///   `codex` CLI is on PATH, or local session logs were found.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detection {
@@ -138,6 +142,7 @@ pub struct Detection {
     pub alibaba: bool,
     pub kimi: bool,
     pub grok: bool,
+    pub codex: bool,
     /// Whether a Claude Code OAuth login is actually present on this machine
     /// (distinct from `claude`, which is also true when only the CLI is on PATH).
     /// Drives the connected/disconnected control, independent of the live toggle.

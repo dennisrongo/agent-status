@@ -12,7 +12,7 @@ import { useAutoRotate } from "./hooks/useAutoRotate";
 import { fitWindowHeight, isWindows } from "./platform";
 import { isTauriReady } from "./tauriReady";
 import { generatedLabel, tileLabel } from "./format";
-import type { Glm, GlmWeek, GrokWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
+import type { CodexWeek, Glm, GlmWeek, GrokWeek, PlanKey, VendorKeyVal, VendorStatus } from "./types";
 
 type Tab = "overview" | "sessions" | "providers" | "settings" | "about";
 
@@ -87,12 +87,23 @@ export default function App() {
     logoutGrok,
     grokLogoutBusy,
     grokLogoutError,
+    codexStatus,
+    installCodex,
+    codexInstallBusy,
+    codexInstallError,
+    loginCodex,
+    cancelCodexLogin,
+    codexLoginBusy,
+    codexLoginError,
+    logoutCodex,
+    codexLogoutBusy,
+    codexLogoutError,
     isLoading,
     error,
     keyError,
   } = useUsage();
   const [tab, setTab] = useState<Tab>("overview");
-  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok">("claude");
+  const [provider, setProvider] = useState<"claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex">("claude");
   const plan: PlanKey = settings?.plan ?? "max5x";
   // Minimal view only trims the Overview; other tabs always show full content.
   const minimal = (settings?.minimalView ?? false) && tab === "overview";
@@ -156,17 +167,19 @@ export default function App() {
   const showAlibaba = snapshot?.detection?.alibaba ?? false;
   const showKimi = snapshot?.detection?.kimi ?? false;
   const showGrok = snapshot?.detection?.grok ?? false;
+  const showCodex = snapshot?.detection?.codex ?? false;
   const hidden = new Set(settings?.hiddenProviders ?? []);
-  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok")[] = [
+  const available: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex")[] = [
     ...(showClaude ? (["claude"] as const) : []),
     ...(showGlm ? (["glm"] as const) : []),
     ...(showCopilot ? (["copilot"] as const) : []),
     ...(showAlibaba ? (["alibaba"] as const) : []),
     ...(showKimi ? (["kimi"] as const) : []),
     ...(showGrok ? (["grok"] as const) : []),
+    ...(showCodex ? (["codex"] as const) : []),
   ];
   const visible = available.filter((p) => !hidden.has(p));
-  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok")[] = visible.length
+  const providerTabs: ("claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex")[] = visible.length
     ? visible
     : available.length
       ? available
@@ -216,6 +229,7 @@ export default function App() {
               <span className="boot-dot alibaba" />
               <span className="boot-dot kimi" />
               <span className="boot-dot grok" />
+              <span className="boot-dot codex" />
             </div>
             <div className="boot-skel" aria-hidden="true">
               <div className="skel-kpis">
@@ -235,6 +249,7 @@ export default function App() {
   const { meta, limits, week, models, sessions, providers, glm, kpi } = snapshot;
   const glmWeek = snapshot.glmWeek;
   const grokWeek = snapshot.grokWeek;
+  const codexWeek = snapshot.codexWeek;
 
   // A present, non-expired Claude Code login is required to show ANY Claude
   // usage now — the local estimate included. Without it (signed out or expired)
@@ -343,7 +358,7 @@ export default function App() {
                     onClick={() => setProvider(p)}
                   >
                     <span className={`seg-dot ${p}`} />{" "}
-                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : p === "kimi" ? "Moonshot" : "xAI"}
+                    {p === "claude" ? "Anthropic" : p === "glm" ? "Z.ai" : p === "copilot" ? "GitHub" : p === "alibaba" ? "Alibaba" : p === "kimi" ? "Moonshot" : p === "grok" ? "xAI" : "Codex"}
                   </button>
                 ))}
               </div>
@@ -471,6 +486,18 @@ export default function App() {
                 loginError={grokLoginError}
               />
             )}
+
+            {eff === "codex" && (
+              <CodexOverview
+                vendor={snapshot.vendor?.codex}
+                codexWeek={codexWeek}
+                minimal={minimal}
+                onConnect={() => setTab("settings")}
+                onLogin={() => void loginCodex()}
+                loginBusy={codexLoginBusy}
+                loginError={codexLoginError}
+              />
+            )}
               </>
             )}
           </section>
@@ -516,9 +543,9 @@ export default function App() {
               <InfoIcon />
               <p>
                 Activity spans every provider that keeps a local session log. Anthropic,
-                Moonshot, and xAI record per-turn tokens when the CLI wrote billed usage;
-                Anthropic cost is estimated from standard-tier pricing, while Moonshot and
-                xAI bill a flat-rate plan. GitHub totals are written when a session ends, so a
+                Moonshot, xAI, and Codex record per-turn tokens when the CLI wrote billed usage;
+                Anthropic cost is estimated from standard-tier pricing, while Moonshot, xAI,
+                and Codex bill a subscription plan. GitHub totals are written when a session ends, so a
                 running one shows —, and it meters premium requests rather than dollars.
                 Z.ai logs are server-lifecycle only; Alibaba has no local session
                 log — see the Providers tab for both.
@@ -590,6 +617,14 @@ export default function App() {
                   name="xAI"
                   meta={vendorMeta(snapshot.vendor?.grok, "sign in via the Grok CLI")}
                   primary={vendorPrimary(snapshot.vendor?.grok)}
+                />
+              )}
+              {showCodex && (
+                <ProviderCard
+                  status={vendorState(snapshot.vendor?.codex)}
+                  name="Codex"
+                  meta={vendorMeta(snapshot.vendor?.codex, "sign in via the Codex CLI")}
+                  primary={vendorPrimary(snapshot.vendor?.codex)}
                 />
               )}
             </div>
@@ -665,6 +700,18 @@ export default function App() {
             grokLogoutBusy={grokLogoutBusy}
             grokLogoutError={grokLogoutError}
             grokVendorStatus={snapshot?.vendor?.grok}
+            codexStatus={codexStatus}
+            installCodex={installCodex}
+            codexInstallBusy={codexInstallBusy}
+            codexInstallError={codexInstallError}
+            loginCodex={loginCodex}
+            cancelCodexLogin={cancelCodexLogin}
+            codexLoginBusy={codexLoginBusy}
+            codexLoginError={codexLoginError}
+            logoutCodex={logoutCodex}
+            codexLogoutBusy={codexLogoutBusy}
+            codexLogoutError={codexLogoutError}
+            codexVendorStatus={snapshot?.vendor?.codex}
             setMinimalView={async (enabled) => {
               // Enabling minimal view jumps to Overview so the window shrinks
               // to the compact stats immediately, rather than waiting for the
@@ -1210,6 +1257,180 @@ function GrokOverview({
             Token counts come from local Grok CLI session logs. Grok Build
             bills a weekly pool — there is no 5-hour session quota like
             Claude. The live line is that weekly window, not a % meter.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function CodexOverview({
+  vendor,
+  codexWeek,
+  minimal,
+  onConnect,
+  onLogin,
+  loginBusy,
+  loginError,
+}: {
+  vendor: VendorStatus | undefined;
+  codexWeek: CodexWeek | undefined;
+  minimal: boolean;
+  onConnect: () => void;
+  onLogin: () => void;
+  loginBusy: boolean;
+  loginError: string | null;
+}) {
+  const live = Boolean(vendor?.configured && vendor.ok);
+  const liveWindows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+  const localWindows = codexWeek?.windows?.filter((d) => d.pct != null) ?? [];
+  const windows = liveWindows.length > 0 ? liveWindows : localWindows;
+  const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
+  const hasLocal = Boolean(codexWeek && codexWeek.sessions > 0);
+  const hasChart = Boolean(codexWeek && codexWeek.days.length > 0);
+
+  if (vendor?.authExpired && !hasLocal) {
+    return (
+      <div className="connect-card warn">
+        <p className="connect-title">Codex login expired</p>
+        <p className="connect-sub">
+          Sign in again to restore live quota — a browser window opens to
+          authenticate with ChatGPT.
+        </p>
+        {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+        <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+          {loginBusy ? "Signing in…" : "Sign in to Codex"}
+        </button>
+        {loginError && <p className="key-err">{loginError}</p>}
+      </div>
+    );
+  }
+
+  if (!live && !hasLocal) {
+    return (
+      <div className="connect-card">
+        <p className="connect-title">
+          {vendor?.configured
+            ? `Couldn’t reach Codex${vendor.error ? `: ${vendor.error}` : ""}`
+            : "No Codex usage data yet"}
+        </p>
+        <p className="connect-sub">
+          Reads your ChatGPT / Codex login for live 5-hour and weekly quota.
+          Sign in from Settings — the Codex CLI is not required.
+        </p>
+        <button className="btn primary" onClick={onConnect}>
+          Setup guide →
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {vendor?.authExpired && hasLocal && (
+        <div className="connect-card warn" style={{ marginBottom: 10 }}>
+          <p className="connect-title">Codex login expired</p>
+          <p className="connect-sub">
+            Local session totals still show below. Sign in again to restore the
+            live 5-hour and weekly windows.
+          </p>
+          {vendor.error && <p className="connect-hint">{vendor.error}</p>}
+          <button className="btn primary" disabled={loginBusy} onClick={onLogin}>
+            {loginBusy ? "Signing in…" : "Sign in to Codex"}
+          </button>
+          {loginError && <p className="key-err">{loginError}</p>}
+        </div>
+      )}
+      {windows.length > 0 && <QuotaMeters windows={windows} />}
+
+      {hasChart && codexWeek && (windows.length === 0 || !minimal) && (
+        <>
+          <div className="sec-head" style={windows.length === 0 ? { marginTop: 0 } : undefined}>
+            <h2>Last 7 days</h2>
+            <span className="meta">{codexWeek.weekTokens} tokens</span>
+          </div>
+          <WeekChart week={codexWeek.days} />
+          {!minimal && codexWeek.models.length > 0 && (
+            <>
+              <div className="sec-head">
+                <h2>By model</h2>
+                <span className="meta">last 7 days</span>
+              </div>
+              <div className="models">
+                {codexWeek.models.map((m) => (
+                  <div className="model-row" key={m.key}>
+                    <span className="name">{m.name}</span>
+                    <div className="mtrack">
+                      <div className="mfill" style={{ width: `${m.pct}%`, background: "var(--codex)" }} />
+                    </div>
+                    <span className="mval">
+                      <b>{m.tokens}</b>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {!hasChart && windows.length === 0 && hasLocal && (
+        <div className="kpis" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+          <div className="kpi">
+            <div className="k-label">Last 5 hours</div>
+            <div className="k-num">{codexWeek?.sessionTokens ?? "—"}</div>
+            <div className="k-sub">local spend</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">Last 7 days</div>
+            <div className="k-num">{codexWeek?.weekTokens ?? "—"}</div>
+            <div className="k-sub">{vendor?.secondary || "local logs"}</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">sessions</div>
+            <div className="k-num">{codexWeek?.sessions ?? 0}</div>
+            <div className="k-sub">{codexWeek?.last ? `last ${codexWeek.last}` : "local"}</div>
+          </div>
+        </div>
+      )}
+
+      {!minimal && (facts.length > 0 || live || hasLocal) && (
+        <div className="budget" style={{ marginTop: 9 }}>
+          {hasLocal && (
+            <>
+              <div className="budget-foot" style={{ marginTop: 0 }}>
+                <span className="used">Last 5 hours</span>
+                <span className="rem">{codexWeek?.sessionTokens ?? "—"}</span>
+              </div>
+              <div className="budget-foot">
+                <span className="used">sessions</span>
+                <span className="rem">
+                  {codexWeek?.sessions ?? 0}
+                  {codexWeek?.last ? ` · last ${codexWeek.last}` : ""}
+                </span>
+              </div>
+            </>
+          )}
+          {facts.map((d, i) => (
+            <div
+              className="budget-foot"
+              key={`${d.label}-${i}`}
+              style={!hasLocal && i === 0 ? { marginTop: 0 } : undefined}
+            >
+              <span className="used">{d.label}</span>
+              <span className="rem">{d.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!minimal && (
+        <div className="note">
+          <InfoIcon />
+          <p>
+            Live 5-hour and weekly windows come from the Codex ChatGPT login.
+            Token counts come from local Codex CLI session logs. Plus and Pro
+            are subscription plans, so there is no dollar column.
           </p>
         </div>
       )}

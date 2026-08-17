@@ -16,7 +16,7 @@ const WIDTH = 300;
  * Compact preview of one provider's usage, shown in its own borderless window
  * when the cursor hovers the tray icon. Listens for the same `usage-updated`
  * broadcast the main window uses, plus a `hover-provider` event that tells it
- * which provider (Anthropic, Z.ai, GitHub, Alibaba, Moonshot, or xAI) to show. Fits its window to the rendered
+ * which provider (Anthropic, Z.ai, GitHub, Alibaba, Moonshot, xAI, or Codex) to show. Fits its window to the rendered
  * content so spacing is controlled by CSS rather than the OS tooltip.
  */
 export function HoverPopover() {
@@ -41,7 +41,7 @@ export function HoverPopover() {
       );
       unlisteners.push(
         await listen<TooltipProvider>("hover-provider", (e) => {
-          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi" || e.payload === "grok")
+          if (e.payload === "claude" || e.payload === "glm" || e.payload === "copilot" || e.payload === "alibaba" || e.payload === "kimi" || e.payload === "grok" || e.payload === "codex")
             setProvider(e.payload);
         }),
       );
@@ -167,6 +167,85 @@ function HoverContent({
       <>
         <Head src="xAI" />
         <div className="hp-status">Sign in to xAI (grok login) to see usage.</div>
+      </>
+    );
+  }
+  if (provider === "codex") {
+    const cw = snapshot.codexWeek;
+    const vendor = snapshot.vendor?.codex;
+    const liveWindows = vendor?.detail.filter((d) => d.pct != null) ?? [];
+    const localWindows = cw?.windows?.filter((d) => d.pct != null) ?? [];
+    const windows = liveWindows.length > 0 ? liveWindows : localWindows;
+    const hasLocal = Boolean(cw && cw.sessions > 0);
+    const live = Boolean(vendor?.configured && vendor.ok);
+    const expired = Boolean(vendor?.authExpired);
+    const meters = (
+      <VendorMeters
+        vendor={vendor}
+        srcLabel="Codex"
+        setupHint="Sign in to Codex (codex login) to see quota."
+        errorLead="Couldn't read Codex usage"
+      />
+    );
+    if (liveWindows.length > 0) return meters;
+    if (windows.length > 0) {
+      return (
+        <>
+          <Head src="Codex" />
+          {expired && (
+            <div className="hp-status warn">Codex login expired — reconnect in the app.</div>
+          )}
+          <div className="hp-rows">
+            {windows.map((d, i) => (
+              <MeterRow
+                key={`${d.label}-${i}`}
+                status={d.status ?? "ok"}
+                label={d.label}
+                aux={<ResetText value={d.value} />}
+                pct={d.pct ?? 0}
+              />
+            ))}
+          </div>
+        </>
+      );
+    }
+    if (cw && hasLocal) {
+      return (
+        <>
+          <Head src={live ? "live · Codex" : "Codex"} />
+          {expired && (
+            <div className="hp-status warn">Codex login expired — reconnect in the app.</div>
+          )}
+          <div className="hp-rows">
+            <div className="hp-kv">
+              <span className="hp-kv-label">Last 5 hours</span>
+              <span className="hp-kv-val">{cw.sessionTokens}</span>
+            </div>
+            <div className="hp-kv">
+              <span className="hp-kv-label">7-day tokens</span>
+              <span className="hp-kv-val">{cw.weekTokens}</span>
+            </div>
+            <div className="hp-kv">
+              <span className="hp-kv-label">sessions</span>
+              <span className="hp-kv-val">{cw.sessions}</span>
+            </div>
+          </div>
+        </>
+      );
+    }
+    if (live) return meters;
+    if (expired) {
+      return (
+        <>
+          <Head src="Codex" />
+          <div className="hp-status warn">Codex login expired — reconnect in the app.</div>
+        </>
+      );
+    }
+    return (
+      <>
+        <Head src="Codex" />
+        <div className="hp-status">Sign in to Codex (codex login) to see usage.</div>
       </>
     );
   }

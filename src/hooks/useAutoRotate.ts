@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-type ProviderTab = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok";
+type ProviderTab = "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex";
 
 /**
  * Cycles through provider tabs on a timer while `enabled` is true.

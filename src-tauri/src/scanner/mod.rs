@@ -8,6 +8,7 @@
 //! | Copilot CLI | `~/.copilot/session-state/*/events.jsonl` | totals at shutdown only |
 //! | GLM / z.ai | `~/.zai/*.log` | none — server lifecycle only |
 //! | Grok Build | `~/.grok/sessions/**/summary.json` + `updates.jsonl` | per-turn when billed usage was recorded |
+//! | Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl` | exact, per turn (`token_count`) |
 //!
 //! Alibaba has no local coding-session log at all (the `bl` CLI is a one-shot
 //! API client), so it contributes vendor-side quota but no rows.
@@ -54,6 +55,10 @@ pub struct UsageSnapshot {
     /// usage the Overview can show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grok_week: Option<GrokWeek>,
+    /// Local Codex CLI token totals (7-day chart + per-model). Plus/Pro
+    /// subscriptions have no dollar rate, so cost is always an em dash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_week: Option<CodexWeek>,
     /// Which providers are present locally, filled in by the command layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detection: Option<crate::vendors::Detection>,
@@ -199,6 +204,37 @@ pub struct GrokWeek {
     pub total_tokens: String,
     pub sessions: usize,
     pub last: String,
+}
+
+/// A 5-hour / weekly quota ring captured from a Codex `token_count`
+/// `rate_limits` snapshot. Same shape as `vendors::KeyVal` so the Overview
+/// can reuse `QuotaMeters` when live `/usage` isn't available.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexWindow {
+    pub label: String,
+    pub value: String,
+    pub pct: f64,
+    pub status: String,
+}
+
+/// Local Codex CLI usage for the OpenAI Overview. `cost_fmt` on each day is
+/// unused (subscription plan) and left as an em dash.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexWeek {
+    pub days: Vec<WeekDay>,
+    pub models: Vec<ModelRow>,
+    /// Tokens in the last 5 hours — local spend, not a vendor quota window.
+    pub session_tokens: String,
+    pub week_tokens: String,
+    pub total_tokens: String,
+    pub sessions: usize,
+    pub last: String,
+    /// Last 5-hour / weekly % the CLI wrote on a `token_count` event.
+    /// Empty when the log never recorded them (third-party models, old files).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<CodexWindow>,
 }
 
 // ---------- Internal record ----------
@@ -393,11 +429,14 @@ pub struct ScanRoots {
     pub copilot: PathBuf,
     /// `$GROK_HOME` (default `~/.grok`) — Grok Build session store.
     pub grok: PathBuf,
+    /// `$CODEX_HOME` (default `~/.codex`) — Codex CLI session store.
+    pub codex: PathBuf,
 }
 
 impl ScanRoots {
-    /// Resolve every root under a home directory, honoring `$KIMI_CODE_HOME`
-    /// and `$GROK_HOME` the same way the matching vendor clients do.
+    /// Resolve every root under a home directory, honoring `$KIMI_CODE_HOME`,
+    /// `$GROK_HOME`, and `$CODEX_HOME` the same way the matching vendor
+    /// clients do.
     pub fn for_home(home: &Path) -> Self {
         let kimi = std::env::var_os("KIMI_CODE_HOME")
             .filter(|v| !v.is_empty())
@@ -407,12 +446,17 @@ impl ScanRoots {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".grok"));
+        let codex = std::env::var_os("CODEX_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
         Self {
             claude: home.join(".claude").join("projects"),
             zai: home.join(".zai"),
             kimi,
             copilot: home.join(".copilot"),
             grok,
+            codex,
         }
     }
 }
@@ -739,21 +783,29 @@ fn build_snapshot(
         ));
     }
 
-    // ---- Kimi Code, Copilot, Grok ----
+    // ---- Kimi Code, Copilot, Grok, Codex ----
     let kimi = scan_kimi(roots.kimi.as_path());
     let copilot = scan_copilot(roots.copilot.as_path());
     let (grok, grok_turns) = scan_grok(roots.grok.as_path(), now);
+    let (codex, codex_turns, codex_rate) = scan_codex(roots.codex.as_path(), now);
     let kimi_total = ProviderTotals::of(&kimi);
     let copilot_total = ProviderTotals::of(&copilot);
     let grok_total = ProviderTotals::of(&grok);
+    let codex_total = ProviderTotals::of(&codex);
     let grok_week = if grok.is_empty() {
         None
     } else {
         Some(build_grok_week(&grok, &grok_turns, now))
     };
+    let codex_week = if codex.is_empty() {
+        None
+    } else {
+        Some(build_codex_week(&codex, &codex_turns, now, codex_rate))
+    };
     rows.extend(kimi);
     rows.extend(copilot);
     rows.extend(grok);
+    rows.extend(codex);
 
     // Newest first, then assign humanized `when` from the ordering instant —
     // and carry the instant itself, so vendor-sourced rows appended by the
@@ -826,6 +878,19 @@ fn build_snapshot(
             sessions: grok_total.sessions,
         });
     }
+    if codex_total.sessions > 0 {
+        providers.push(Provider {
+            name: "Codex".to_string(),
+            status: "connected".to_string(),
+            tokens: if codex_total.tokens > 0 {
+                fmt_tokens(codex_total.tokens as f64)
+            } else {
+                EM_DASH.to_string()
+            },
+            cost: EM_DASH.to_string(),
+            sessions: codex_total.sessions,
+        });
+    }
 
     let kpi = Kpi {
         session_tokens: fmt_tokens(s_used as f64),
@@ -850,6 +915,7 @@ fn build_snapshot(
         // fetch, like `vendor`/`detection` (the scanner sees no z.ai data).
         glm_week: None,
         grok_week,
+        codex_week,
         detection: None,
     }
 }
@@ -1493,6 +1559,414 @@ fn grok_short_id(id: &str, dir: &Path) -> String {
         id.to_string()
     };
     raw.chars().take(8).collect()
+}
+
+// ---------- Codex CLI ----------
+
+/// Read the most-recent Codex CLI sessions from `$CODEX_HOME`.
+///
+/// Layout is `sessions/YYYY/MM/DD/rollout-*.jsonl` plus a flat
+/// `archived_sessions/*.jsonl`. Each JSONL is one conversation. Token spend
+/// lives on `event_msg` / `token_count` rows (`last_token_usage` per turn;
+/// `total_token_usage` is cumulative and is only used when no last-turn
+/// figure exists). `turn_context` supplies the model when both are present.
+/// Subagent rollouts are skipped so they aren't double-counted with the
+/// parent session.
+fn scan_codex(
+    root: &Path,
+    now: DateTime<Utc>,
+) -> (
+    Vec<(DateTime<Utc>, SessionRow)>,
+    Vec<(DateTime<Utc>, u64, String)>,
+    Option<CodexRateSnap>,
+) {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for pattern in [
+        format!("{}/sessions/**/*.jsonl", root.to_string_lossy()),
+        format!("{}/archived_sessions/*.jsonl", root.to_string_lossy()),
+    ] {
+        if let Ok(paths) = glob::glob(&pattern) {
+            files.extend(paths.filter_map(Result::ok));
+        }
+    }
+
+    let mut candidates: Vec<(DateTime<Utc>, PathBuf)> = Vec::new();
+    for fp in files {
+        let at = std::fs::metadata(&fp)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from)
+            .or_else(|| date_from_codex_path(&fp))
+            .unwrap_or(now);
+        candidates.push((at, fp));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let cut_7d = now - Duration::days(7);
+    let mut rows = Vec::new();
+    let mut turns: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
+    let mut latest_rate: Option<CodexRateSnap> = None;
+    for (i, (mtime, path)) in candidates.iter().enumerate() {
+        let for_row = i < MAX_PROVIDER_ROWS;
+        let for_week = *mtime >= cut_7d;
+        if !for_row && !for_week {
+            continue;
+        }
+        let Some(parsed) = read_codex_session(path) else { continue };
+        turns.extend(parsed.turns.iter().cloned());
+        if let Some(rate) = parsed.rate {
+            if latest_rate
+                .as_ref()
+                .map(|prev| rate.at >= prev.at)
+                .unwrap_or(true)
+            {
+                latest_rate = Some(rate);
+            }
+        }
+        if !for_row {
+            continue;
+        }
+        let last = parsed
+            .turns
+            .iter()
+            .map(|(at, _, _)| *at)
+            .max()
+            .unwrap_or(parsed.last.unwrap_or(*mtime));
+        let tokens: u64 = parsed.turns.iter().map(|t| t.1).sum();
+        rows.push((
+            last,
+            SessionRow {
+                id: parsed.id.chars().take(8).collect(),
+                project: project_from_cwd(&parsed.cwd),
+                model: parsed.model,
+                tokens,
+                cost: 0.0,
+                when: String::new(),
+                at: None,
+                provider: "codex".to_string(),
+                tokens_text: if tokens > 0 {
+                    fmt_tokens(tokens as f64)
+                } else {
+                    EM_DASH.to_string()
+                },
+                cost_text: EM_DASH.to_string(),
+            },
+        ));
+    }
+    (rows, turns, latest_rate)
+}
+
+struct CodexRateWin {
+    used_percent: f64,
+    reset_at: Option<i64>,
+}
+
+struct CodexRateSnap {
+    at: DateTime<Utc>,
+    primary: Option<CodexRateWin>,
+    secondary: Option<CodexRateWin>,
+}
+
+struct CodexSession {
+    id: String,
+    cwd: String,
+    model: String,
+    last: Option<DateTime<Utc>>,
+    turns: Vec<(DateTime<Utc>, u64, String)>,
+    rate: Option<CodexRateSnap>,
+}
+
+fn read_codex_session(path: &Path) -> Option<CodexSession> {
+    let mut id = String::new();
+    let mut cwd = String::new();
+    let mut model = String::new();
+    let mut last: Option<DateTime<Utc>> = None;
+    let mut turns: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
+    let mut last_total: Option<(DateTime<Utc>, u64, String)> = None;
+    let mut saw_last_turn = false;
+    let mut is_subagent = false;
+    let mut rate: Option<CodexRateSnap> = None;
+
+    for line in read_lines(path) {
+        if !(line.contains("token_count")
+            || line.contains("turn_context")
+            || line.contains("session_meta"))
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let payload = v.get("payload").unwrap_or(&v);
+        let at = extract_timestamp(&line)
+            .or_else(|| {
+                payload
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&Utc))
+            });
+        if let Some(dt) = at {
+            last = Some(last.map_or(dt, |prev| prev.max(dt)));
+        }
+
+        if kind == "session_meta" {
+            if let Some(sid) = payload.get("id").and_then(|s| s.as_str()) {
+                if id.is_empty() {
+                    id = sid.to_string();
+                }
+            }
+            if let Some(dir) = payload.get("cwd").and_then(|s| s.as_str()) {
+                if cwd.is_empty() {
+                    cwd = dir.to_string();
+                }
+            }
+            let source = payload
+                .get("source")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if source.to_lowercase().contains("subagent") {
+                is_subagent = true;
+            }
+        }
+
+        if kind == "turn_context" {
+            if let Some(m) = payload.get("model").and_then(|s| s.as_str()) {
+                if !m.is_empty() {
+                    model = short_model(m);
+                }
+            }
+            if let Some(dir) = payload.get("cwd").and_then(|s| s.as_str()) {
+                cwd = dir.to_string();
+            }
+        }
+
+        let is_token_count = kind == "token_count"
+            || payload.get("type").and_then(|t| t.as_str()) == Some("token_count")
+            || kind == "event_msg"
+                && payload.get("type").and_then(|t| t.as_str()) == Some("token_count");
+        if !is_token_count {
+            continue;
+        }
+        if let Some(snap) = parse_codex_rate_limits(payload, at.unwrap_or(last.unwrap_or_else(Utc::now))) {
+            if rate.as_ref().map(|prev| snap.at >= prev.at).unwrap_or(true) {
+                rate = Some(snap);
+            }
+        }
+        let info = payload.get("info").unwrap_or(payload);
+        let model_now = info
+            .get("model")
+            .and_then(|s| s.as_str())
+            .map(short_model)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| model.clone());
+        let stamp = at.unwrap_or(last.unwrap_or_else(Utc::now));
+        if let Some(n) = usage_tokens(info.get("last_token_usage").or_else(|| info.get("lastTokenUsage")))
+        {
+            saw_last_turn = true;
+            turns.push((stamp, n, model_now.clone()));
+        } else if let Some(n) = usage_tokens(info.get("total_token_usage").or_else(|| info.get("totalTokenUsage")))
+            .or_else(|| usage_tokens(Some(info)))
+        {
+            last_total = Some((stamp, n, model_now));
+        }
+    }
+
+    if is_subagent {
+        return None;
+    }
+    if !saw_last_turn {
+        if let Some(t) = last_total {
+            turns.push(t);
+        }
+    }
+    if id.is_empty() {
+        id = path
+            .file_stem()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if let Some(pos) = id.rfind('-') {
+            // rollout-YYYY-MM-DDThh-mm-ss-<uuid>
+            let tail = &id[pos + 1..];
+            if tail.len() >= 8 {
+                id = tail.to_string();
+            }
+        }
+    }
+    if turns.is_empty() && id.is_empty() && cwd.is_empty() {
+        return None;
+    }
+    Some(CodexSession {
+        id,
+        cwd,
+        model,
+        last,
+        turns,
+        rate,
+    })
+}
+
+fn parse_codex_rate_limits(payload: &Value, at: DateTime<Utc>) -> Option<CodexRateSnap> {
+    let rl = payload
+        .get("rate_limits")
+        .or_else(|| payload.get("rateLimits"))?;
+    if rl.is_null() {
+        return None;
+    }
+    let primary = parse_codex_rate_win(
+        rl.get("primary")
+            .or_else(|| rl.get("primary_window"))
+            .or_else(|| rl.get("primaryWindow")),
+    );
+    let secondary = parse_codex_rate_win(
+        rl.get("secondary")
+            .or_else(|| rl.get("secondary_window"))
+            .or_else(|| rl.get("secondaryWindow")),
+    );
+    if primary.is_none() && secondary.is_none() {
+        return None;
+    }
+    Some(CodexRateSnap {
+        at,
+        primary,
+        secondary,
+    })
+}
+
+fn parse_codex_rate_win(raw: Option<&Value>) -> Option<CodexRateWin> {
+    let w = raw.filter(|v| !v.is_null())?;
+    let used = w
+        .get("used_percent")
+        .or_else(|| w.get("usedPercent"))
+        .and_then(json_num_f64)
+        .or_else(|| {
+            w.get("remaining_percent")
+                .or_else(|| w.get("remainingPercent"))
+                .and_then(json_num_f64)
+                .map(|r| (100.0 - r).clamp(0.0, 100.0))
+        })?;
+    let reset = w
+        .get("reset_at")
+        .or_else(|| w.get("resetAt"))
+        .or_else(|| w.get("resets_at"))
+        .or_else(|| w.get("resetsAt"))
+        .and_then(json_unix);
+    Some(CodexRateWin {
+        used_percent: used.clamp(0.0, 100.0),
+        reset_at: reset,
+    })
+}
+
+fn json_num_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn json_unix(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.timestamp())
+            .or_else(|| s.parse().ok()),
+        _ => None,
+    }
+}
+
+fn reset_countdown_text(reset_at: Option<i64>, now: DateTime<Utc>) -> Option<String> {
+    let ts = reset_at.filter(|&n| n > 0)?;
+    let reset = DateTime::from_timestamp(ts, 0)?;
+    let secs = reset.signed_duration_since(now).num_seconds();
+    if secs <= 0 {
+        return None;
+    }
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3_600;
+    let m = (secs % 3_600) / 60;
+    Some(if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    })
+}
+
+fn codex_window(label: &str, fallback: &str, w: &CodexRateWin, now: DateTime<Utc>) -> CodexWindow {
+    let pct = ((w.used_percent * 10.0).round() / 10.0).clamp(0.0, 100.0);
+    let (status, _) = status_for(pct);
+    let value = reset_countdown_text(w.reset_at, now)
+        .map(|r| format!("resets in {r}"))
+        .unwrap_or_else(|| fallback.to_string());
+    CodexWindow {
+        label: label.to_string(),
+        value,
+        pct,
+        status: status.to_string(),
+    }
+}
+
+/// `input_tokens` + `output_tokens`. Cached / reasoning counts are already
+/// included in those totals — adding them would double-count.
+fn usage_tokens(u: Option<&Value>) -> Option<u64> {
+    let u = u?;
+    let input = u
+        .get("input_tokens")
+        .or_else(|| u.get("inputTokens"))
+        .and_then(|x| x.as_u64())?;
+    let output = u
+        .get("output_tokens")
+        .or_else(|| u.get("outputTokens"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    Some(input.saturating_add(output))
+}
+
+fn short_model(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or(name).to_string()
+}
+
+fn date_from_codex_path(path: &Path) -> Option<DateTime<Utc>> {
+    // sessions/YYYY/MM/DD/file.jsonl
+    let mut comps = path.components().rev();
+    let _file = comps.next()?;
+    let day = comps.next()?.as_os_str().to_string_lossy();
+    let month = comps.next()?.as_os_str().to_string_lossy();
+    let year = comps.next()?.as_os_str().to_string_lossy();
+    let stamp = format!("{year}-{month}-{day}T00:00:00Z");
+    DateTime::parse_from_rfc3339(&stamp)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+fn build_codex_week(
+    rows: &[(DateTime<Utc>, SessionRow)],
+    turns: &[(DateTime<Utc>, u64, String)],
+    now: DateTime<Utc>,
+    rate: Option<CodexRateSnap>,
+) -> CodexWeek {
+    let grok = build_grok_week(rows, turns, now);
+    let mut windows = Vec::new();
+    if let Some(r) = rate {
+        if let Some(w) = r.primary.as_ref() {
+            windows.push(codex_window("Session", "5-hour window", w, now));
+        }
+        if let Some(w) = r.secondary.as_ref() {
+            windows.push(codex_window("Week", "rolling 7 days", w, now));
+        }
+    }
+    CodexWeek {
+        days: grok.days,
+        models: grok.models,
+        session_tokens: grok.session_tokens,
+        week_tokens: grok.week_tokens,
+        total_tokens: grok.total_tokens,
+        sessions: grok.sessions,
+        last: grok.last,
+        windows,
+    }
 }
 
 // ---------- Shared helpers ----------
@@ -2268,6 +2742,7 @@ mod tests {
             kimi: kimi.to_path_buf(),
             copilot: copilot.to_path_buf(),
             grok: kimi.join("__no_grok__"),
+            codex: kimi.join("__no_codex__"),
         }
     }
 
@@ -2509,7 +2984,7 @@ mod tests {
             &[r#"{"type":"session.start","data":{"selectedModel":"claude-opus-4.7","context":{"cwd":"/tmp/cproj"}},"timestamp":"2026-06-17T17:00:00.000Z"}"#],
         );
 
-        let snap = scan_roots(&ScanRoots { claude, zai, kimi, copilot, grok: tmp.path().join("nogrok") }, "max5x", now);
+        let snap = scan_roots(&ScanRoots { claude, zai, kimi, copilot, grok: tmp.path().join("nogrok"), codex: tmp.path().join("nocodex") }, "max5x", now);
         let order: Vec<&str> = snap.sessions.iter().map(|s| s.provider.as_str()).collect();
         assert_eq!(order, vec!["claude", "kimi", "copilot"]);
 
@@ -2532,6 +3007,7 @@ mod tests {
                 kimi: tmp.path().join("nope"),
                 copilot: tmp.path().join("nope"),
                 grok: tmp.path().join("nope"),
+                codex: tmp.path().join("nope"),
             },
             "pro",
             now,
@@ -2603,6 +3079,7 @@ mod tests {
             kimi: grok.join("__no_kimi__"),
             copilot: grok.join("__no_copilot__"),
             grok: grok.to_path_buf(),
+            codex: grok.join("__no_codex__"),
         }
     }
 
@@ -2617,7 +3094,7 @@ mod tests {
             &grok,
             "C%3A%5Cproj",
             "01a00bbe-460b-7cc0-b3c7-3f1326845eba",
-            r#"{"info":{"id":"01a00bbe-460b-7cc0-b3c7-3f1326845eba","cwd":"C:\\Users\\denni\\Documents\\GitHub\\agent-status"},"current_model_id":"grok-4.6","updated_at":"2026-08-16T19:30:00Z","last_active_at":"2026-08-16T19:30:00Z"}"#,
+            r#"{"info":{"id":"01a00bbe-460b-7cc0-b3c7-3f1326845eba","cwd":"C:\\tmp\\agent-status"},"current_model_id":"grok-4.6","updated_at":"2026-08-16T19:30:00Z","last_active_at":"2026-08-16T19:30:00Z"}"#,
             &[
                 &grok_usage_line(1000, 200, 1_786_903_800),
                 // Context-window totalTokens must not be counted as spend.
@@ -2797,5 +3274,167 @@ mod tests {
         let week = snap.grok_week.expect("week");
         assert_eq!(week.week_tokens, "26K");
         assert_eq!(week.sessions, MAX_PROVIDER_ROWS);
+    }
+
+    // ── Codex CLI session store ──
+
+    fn write_codex_session(codex: &Path, ymd: &str, file: &str, lines: &[&str]) {
+        let mut dir = codex.join("sessions");
+        for part in ymd.split('/') {
+            dir = dir.join(part);
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join(file)).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+    }
+
+    fn codex_roots(codex: &Path) -> ScanRoots {
+        ScanRoots {
+            claude: codex.join("__no_claude__"),
+            zai: codex.join("__no_zai__"),
+            kimi: codex.join("__no_kimi__"),
+            copilot: codex.join("__no_copilot__"),
+            grok: codex.join("__no_grok__"),
+            codex: codex.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn codex_session_sums_last_token_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join("codex");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_codex_session(
+            &codex,
+            "2026/08/16",
+            "rollout-2026-08-16T19-00-00-aabbccdd-1111-2222-3333-444455556666.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-16T19:00:00.000Z","type":"session_meta","payload":{"id":"aabbccdd-1111-2222-3333-444455556666","cwd":"/tmp/agent-status","source":"cli"}}"#,
+                r#"{"timestamp":"2026-08-16T19:01:00.000Z","type":"turn_context","payload":{"cwd":"/tmp/agent-status","model":"gpt-5.1-codex"}}"#,
+                r#"{"timestamp":"2026-08-16T19:02:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":200},"total_token_usage":{"input_tokens":1000,"output_tokens":200}}}}"#,
+                r#"{"timestamp":"2026-08-16T19:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"output_tokens":100},"total_token_usage":{"input_tokens":1500,"output_tokens":300}}}}"#,
+            ],
+        );
+        let snap = scan_roots(&codex_roots(&codex), "max5x", now);
+        assert_eq!(snap.sessions.len(), 1);
+        let row = &snap.sessions[0];
+        assert_eq!(row.provider, "codex");
+        assert_eq!(row.project, "agent-status");
+        // Two last_token_usage turns: (1000+200) + (500+100) = 1800. Cached is
+        // already inside input_tokens and must not be added again.
+        assert_eq!(row.tokens, 1800);
+        assert_eq!(row.tokens_text, "2K");
+        assert_eq!(row.model, "gpt-5.1-codex");
+        assert_eq!(row.cost_text, "—");
+        assert_eq!(row.id, "aabbccdd");
+        assert_eq!(row.when, "30m ago");
+        let week = snap.codex_week.expect("week");
+        assert_eq!(week.session_tokens, "2K");
+        assert_eq!(week.week_tokens, "2K");
+        assert!(week.models.iter().any(|m| m.name == "gpt-5.1-codex"));
+    }
+
+    #[test]
+    fn codex_falls_back_to_total_when_no_last_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join("codex");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_codex_session(
+            &codex,
+            "2026/08/16",
+            "rollout-total-only.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-16T19:00:00.000Z","type":"session_meta","payload":{"id":"totaltot-0000-0000-0000-000000000001","cwd":"/tmp/onlytotal","source":"cli"}}"#,
+                r#"{"timestamp":"2026-08-16T19:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20}}}}"#,
+                r#"{"timestamp":"2026-08-16T19:20:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"output_tokens":50}}}}"#,
+            ],
+        );
+        let row = &scan_roots(&codex_roots(&codex), "max5x", now).sessions[0];
+        // Cumulative totals must not be summed — take the last one.
+        assert_eq!(row.tokens, 450);
+        assert_eq!(row.project, "onlytotal");
+    }
+
+    #[test]
+    fn codex_skips_subagent_rollouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join("codex");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_codex_session(
+            &codex,
+            "2026/08/16",
+            "rollout-subagent.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-16T19:00:00.000Z","type":"session_meta","payload":{"id":"subagent-0000","cwd":"/tmp/sub","source":"subagent"}}"#,
+                r#"{"timestamp":"2026-08-16T19:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":999,"output_tokens":1}}}}"#,
+            ],
+        );
+        let snap = scan_roots(&codex_roots(&codex), "max5x", now);
+        assert!(snap.sessions.is_empty());
+        assert!(snap.codex_week.is_none());
+    }
+
+    #[test]
+    fn codex_week_captures_rate_limit_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join("codex");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let session_reset = now.timestamp() + 2 * 3600;
+        let week_reset = now.timestamp() + 3 * 86_400;
+        write_codex_session(
+            &codex,
+            "2026/08/16",
+            "rollout-with-limits.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-16T19:00:00.000Z","type":"session_meta","payload":{"id":"limits01-0000-0000-0000-000000000001","cwd":"/tmp/limits","source":"cli"}}"#,
+                &format!(
+                    r#"{{"timestamp":"2026-08-16T19:10:00.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"output_tokens":20}}}},"rate_limits":{{"primary":{{"used_percent":37,"resets_at":{session_reset},"window_minutes":300}},"secondary":{{"used_percent":12,"resets_at":{week_reset},"window_minutes":10080}}}}}}}}"#
+                ),
+            ],
+        );
+        let week = scan_roots(&codex_roots(&codex), "max5x", now)
+            .codex_week
+            .expect("week");
+        assert_eq!(week.days.len(), 7);
+        assert_eq!(week.windows.len(), 2);
+        assert_eq!(week.windows[0].label, "Session");
+        assert_eq!(week.windows[0].pct, 37.0);
+        assert_eq!(week.windows[0].status, "ok");
+        assert!(week.windows[0].value.contains("resets in"));
+        assert_eq!(week.windows[1].label, "Week");
+        assert_eq!(week.windows[1].pct, 12.0);
+    }
+
+    #[test]
+    fn codex_week_ignores_null_rate_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = tmp.path().join("codex");
+        let now = DateTime::parse_from_rfc3339("2026-08-16T20:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_codex_session(
+            &codex,
+            "2026/08/16",
+            "rollout-null-limits.jsonl",
+            &[
+                r#"{"timestamp":"2026-08-16T19:00:00.000Z","type":"session_meta","payload":{"id":"nulllim-0000-0000-0000-000000000001","cwd":"/tmp/null","source":"cli"}}"#,
+                r#"{"timestamp":"2026-08-16T19:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2}},"rate_limits":{"primary":null,"secondary":null}}}"#,
+            ],
+        );
+        let week = scan_roots(&codex_roots(&codex), "max5x", now)
+            .codex_week
+            .expect("week");
+        assert!(week.windows.is_empty());
+        assert_eq!(week.days.len(), 7);
     }
 }

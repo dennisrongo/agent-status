@@ -11,7 +11,7 @@ use crate::process_util::SilentCommand;
 use crate::scanner::{self, UsageSnapshot};
 use crate::settings::{self, Settings, SettingsView};
 use crate::state::AppState;
-use crate::vendors::{alibaba, anthropic, claude, copilot, glm, grok, kimi, Detection, VendorReport, VendorStatus};
+use crate::vendors::{alibaba, anthropic, claude, codex, copilot, glm, grok, kimi, Detection, VendorReport, VendorStatus};
 
 /// The user code + verification URL the UI shows during a Copilot device-flow
 /// connect. The device code itself stays server-side in `AppState`.
@@ -63,6 +63,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         alibaba_due,
         kimi_refresh_due,
         grok_refresh_due,
+        codex_refresh_due,
         glm_week_cached,
         glm_week_due,
     ) = {
@@ -100,6 +101,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         });
         let grok_refresh_due = guard.grok_refresh_attempted_at.is_none_or(|t| {
             (now - t).num_seconds() >= crate::state::GROK_REFRESH_MIN_SECS
+        });
+        let codex_refresh_due = guard.codex_refresh_attempted_at.is_none_or(|t| {
+            (now - t).num_seconds() >= crate::state::CODEX_REFRESH_MIN_SECS
         });
         // The z.ai 7-day usage chart pulls a week of hourly buckets — poll it
         // gently (GLM_WEEK_MIN_SECS) and serve the cached chart in between,
@@ -152,6 +156,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             alibaba_due,
             kimi_refresh_due,
             grok_refresh_due,
+            codex_refresh_due,
             guard.glm_week_last_good.clone().filter(|_| {
                 guard.glm_week_last_good_at.is_some_and(|t| {
                     (now - t).num_seconds() < crate::state::GLM_WEEK_CACHE_MAX_SECS
@@ -323,18 +328,32 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
             tracing::warn!("grok token auto-refresh failed: {e}");
         }
     }
+    // Codex access tokens last a few hours; the CLI only renews them while
+    // it runs. Renew an expired-by-clock login in place before the usage
+    // fetch re-reads auth.json (the CLI re-reads that file, so our rotation
+    // is race-safe with a running TUI).
+    let mut codex_refresh_attempted = false;
+    let codex_ts = codex::token_status(now);
+    if codex_ts.present && codex_ts.expired && codex_ts.has_refresh && codex_refresh_due {
+        codex_refresh_attempted = true;
+        if let Err(e) = codex::refresh(now).await {
+            tracing::warn!("codex token auto-refresh failed: {e}");
+        }
+    }
     // The 7-day chart shares `zai_key`/`glm_endpoint` with the quota fetch but
     // is separately throttled (its payload is week-sized); capture presence
     // before the join moves the key, and hand the week fetch its own clone.
     let zai_key_present = zai_key.is_some();
     let zai_key_week = zai_key.clone();
-    let (glm_status, glm_week_result, anthropic_status, kimi_status, grok_status) = tokio::join!(
-        fetch_glm(zai_key, &glm_endpoint, now),
-        fetch_glm_week(zai_key_week.as_ref(), &glm_endpoint, now, glm_week_due),
-        fetch_anthropic(anthropic_key),
-        kimi::fetch(now),
-        grok::fetch(now),
-    );
+    let (glm_status, glm_week_result, anthropic_status, kimi_status, grok_status, codex_status) =
+        tokio::join!(
+            fetch_glm(zai_key, &glm_endpoint, now),
+            fetch_glm_week(zai_key_week.as_ref(), &glm_endpoint, now, glm_week_due),
+            fetch_anthropic(anthropic_key),
+            kimi::fetch(now),
+            grok::fetch(now),
+            codex::fetch(now),
+        );
     // z.ai 7-day chart: serve the fresh reading, else the age-bounded cache. A
     // failure with nothing cached simply hides the section — the quota card
     // above already surfaces z.ai errors — and leaves the throttle unstamped so
@@ -426,6 +445,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         grok: grok_status.configured
             || grok::cli_on_path()
             || snapshot.sessions.iter().any(|s| s.provider == "grok"),
+        codex: codex_status.configured
+            || codex::cli_on_path()
+            || snapshot.sessions.iter().any(|s| s.provider == "codex"),
         claude_signed_in: claude_ts.present,
         // "Expired" here means the login genuinely needs a manual reconnect — not
         // merely that the short-lived access token is past its clock. A live
@@ -446,6 +468,7 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         alibaba: alibaba_status,
         kimi: kimi_status,
         grok: grok_status,
+        codex: codex_status,
     });
 
     // z.ai activity rows for the Sessions tab: one per active hour from the
@@ -527,6 +550,9 @@ pub async fn collect(app: &AppHandle) -> Result<UsageSnapshot, String> {
         }
         if grok_refresh_attempted {
             guard.grok_refresh_attempted_at = Some(now);
+        }
+        if codex_refresh_attempted {
+            guard.codex_refresh_attempted_at = Some(now);
         }
         // Cache a fresh z.ai 7-day reading; drop it (and reset the throttle)
         // when the key is gone so a stale chart can't outlive a sign-out.
@@ -879,7 +905,7 @@ pub fn set_tooltip_provider(
     provider: String,
 ) -> Result<SettingsView, String> {
     match provider.as_str() {
-        "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" => {}
+        "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" => {}
         other => return Err(format!("unknown provider: {other}")),
     }
     let updated = update_settings(&state, |s| s.tooltip_provider = provider)?;
@@ -930,7 +956,7 @@ pub fn set_hidden_providers(
 ) -> Result<SettingsView, String> {
     for p in &providers {
         match p.as_str() {
-            "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" => {}
+            "claude" | "glm" | "copilot" | "alibaba" | "kimi" | "grok" | "codex" => {}
             other => return Err(format!("unknown provider: {other}")),
         }
     }
@@ -1521,6 +1547,138 @@ fn clear_grok_throttle(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<Mutex<AppState>>();
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     guard.grok_refresh_attempted_at = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn codex_cli_status() -> Result<codex::CliStatus, String> {
+    Ok(tokio::task::spawn_blocking(codex::cli_status)
+        .await
+        .map_err(|e| e.to_string())?)
+}
+
+/// Install the official Codex CLI via npm. Optional — live quota uses in-app
+/// OAuth and does not need the binary.
+#[tauri::command]
+pub async fn install_codex_cli(app: AppHandle) -> Result<String, String> {
+    let msg = tokio::task::spawn_blocking(codex::install)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+/// Begin an in-app Codex ChatGPT OAuth login (authorization-code + PKCE,
+/// localhost callback). Opens the authorize page and waits in the background
+/// for the redirect. The CLI is not required.
+#[tauri::command]
+pub fn codex_login_start(app: AppHandle) -> Result<codex::LoginInfo, String> {
+    let _ = stop_pending_codex_login(&app);
+    let start = codex::begin_login()?;
+    let port = start
+        .listener
+        .local_addr()
+        .map_err(|e| format!("listener: {e}"))?
+        .port();
+    let url = start.url.clone();
+    let verifier = start.verifier.clone();
+    let state = start.state.clone();
+    let redirect_uri = start.redirect_uri.clone();
+    let cancel = start.cancel.clone();
+    {
+        let st = app.state::<Mutex<AppState>>();
+        let mut guard = st.lock().map_err(|e| e.to_string())?;
+        guard.pending_codex_login = Some(crate::state::PendingCodexLogin {
+            verifier: verifier.clone(),
+            state: state.clone(),
+            redirect_uri: redirect_uri.clone(),
+            port,
+            cancel: cancel.clone(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+        });
+    }
+    let listener = start.listener;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let wait = tokio::task::spawn_blocking(move || {
+            codex::wait_for_callback(
+                listener,
+                &state,
+                &cancel,
+                std::time::Duration::from_secs(10 * 60),
+            )
+        })
+        .await;
+        let outcome: Result<(), String> = match wait {
+            Ok(Ok(code)) => {
+                let now = chrono::Utc::now();
+                match codex::exchange_code(now, &code, &verifier, &redirect_uri).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(format!("login task: {e}")),
+        };
+        let _ = handle.emit(
+            "codex-login-done",
+            serde_json::json!({
+                "ok": outcome.is_ok(),
+                "error": outcome.as_ref().err(),
+            }),
+        );
+        if outcome.is_ok() {
+            let _ = clear_codex_throttle(&handle);
+            spawn_collect_and_broadcast(&handle);
+        }
+        {
+            let st = handle.state::<Mutex<AppState>>();
+            if let Ok(mut guard) = st.lock() {
+                guard.pending_codex_login = None;
+            };
+        }
+    });
+    let _ = open_url(url.clone());
+    Ok(codex::LoginInfo { authorize_url: url })
+}
+
+#[tauri::command]
+pub fn codex_login_cancel(app: AppHandle) -> Result<(), String> {
+    stop_pending_codex_login(&app)
+}
+
+fn stop_pending_codex_login(app: &AppHandle) -> Result<(), String> {
+    let pending = {
+        let st = app.state::<Mutex<AppState>>();
+        let mut guard = st.lock().map_err(|e| e.to_string())?;
+        guard.pending_codex_login.take()
+    };
+    if let Some(p) = pending {
+        p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        codex::cancel_login(p.port);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn codex_cli_logout(app: AppHandle) -> Result<String, String> {
+    let _ = stop_pending_codex_login(&app);
+    let msg = tokio::task::spawn_blocking(codex::logout)
+        .await
+        .map_err(|e| e.to_string())?;
+    if msg.is_ok() {
+        clear_codex_throttle(&app)?;
+        spawn_collect_and_broadcast(&app);
+    }
+    msg
+}
+
+fn clear_codex_throttle(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Mutex<AppState>>();
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.codex_refresh_attempted_at = None;
     Ok(())
 }
 

@@ -6,6 +6,8 @@ import type {
   BailianCliStatus,
   ClaudeLoginInfo,
   CopilotDeviceCode,
+  CodexCliStatus,
+  CodexLoginInfo,
   GrokCliStatus,
   KimiCliStatus,
   PlanKey,
@@ -58,6 +60,11 @@ export function useUsage() {
   const grokInstallCmd = useTauriCommand<string>("install_grok_cli");
   const grokLoginCmd = useTauriCommand<string>("grok_cli_login");
   const grokLogoutCmd = useTauriCommand<string>("grok_cli_logout");
+  const codexStatusCmd = useTauriCommand<CodexCliStatus>("codex_cli_status");
+  const codexInstallCmd = useTauriCommand<string>("install_codex_cli");
+  const codexLoginStartCmd = useTauriCommand<CodexLoginInfo>("codex_login_start");
+  const codexLoginCancelCmd = useTauriCommand<void>("codex_login_cancel");
+  const codexLogoutCmd = useTauriCommand<string>("codex_cli_logout");
 
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -166,6 +173,30 @@ export function useUsage() {
   const logoutGrok = useCallback(
     () => grokLogoutCmd.execute(),
     [grokLogoutCmd],
+  );
+
+  const codexStatus = useCallback(
+    () => codexStatusCmd.execute(),
+    [codexStatusCmd],
+  );
+
+  const installCodex = useCallback(
+    () => codexInstallCmd.execute(),
+    [codexInstallCmd],
+  );
+
+  const loginCodex = useCallback(
+    () => codexLoginStartCmd.execute(),
+    [codexLoginStartCmd],
+  );
+
+  const cancelCodexLogin = useCallback(() => {
+    void codexLoginCancelCmd.execute();
+  }, [codexLoginCancelCmd]);
+
+  const logoutCodex = useCallback(
+    () => codexLogoutCmd.execute(),
+    [codexLogoutCmd],
   );
 
   const setPlan = useCallback(
@@ -394,6 +425,17 @@ export function useUsage() {
     logoutGrok,
     grokLogoutBusy: grokLogoutCmd.isLoading,
     grokLogoutError: grokLogoutCmd.error,
+    codexStatus,
+    installCodex,
+    codexInstallBusy: codexInstallCmd.isLoading,
+    codexInstallError: codexInstallCmd.error,
+    loginCodex,
+    cancelCodexLogin,
+    codexLoginBusy: codexLoginStartCmd.isLoading,
+    codexLoginError: codexLoginStartCmd.error,
+    logoutCodex,
+    codexLogoutBusy: codexLogoutCmd.isLoading,
+    codexLogoutError: codexLogoutCmd.error,
     isLoading: usageCmd.isLoading,
     error: usageCmd.error,
     keyError: setKeyCmd.error,

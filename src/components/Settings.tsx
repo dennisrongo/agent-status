@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import type { BailianCliStatus, ClaudeLoginInfo, CopilotDeviceCode, GrokCliStatus, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
+import type { BailianCliStatus, ClaudeLoginInfo, CodexCliStatus, CodexLoginInfo, CopilotDeviceCode, GrokCliStatus, KimiCliStatus, KimiDeviceLogin, SettingsView, TooltipProvider, VendorStatus, WindowMode } from "../types";
 
 /** Clickable info icon that opens a popover with help text. Stays open until
  * the user clicks outside — so they can follow multi-step instructions. */
@@ -96,6 +96,17 @@ interface Props {
   logoutGrok: () => Promise<string | null>;
   grokLogoutBusy: boolean;
   grokLogoutError: string | null;
+  codexStatus: () => Promise<CodexCliStatus | null>;
+  installCodex: () => Promise<string | null>;
+  codexInstallBusy: boolean;
+  codexInstallError: string | null;
+  loginCodex: () => Promise<CodexLoginInfo | null>;
+  cancelCodexLogin: () => void;
+  codexLoginBusy: boolean;
+  codexLoginError: string | null;
+  logoutCodex: () => Promise<string | null>;
+  codexLogoutBusy: boolean;
+  codexLogoutError: string | null;
   /** Authoritative Alibaba status from the usage fetch — reflects the real
    * connection state (incl. a console session that `bl auth status` can't see
    * as expired). Falls back to `bailianStatus()` before the first snapshot. */
@@ -106,6 +117,9 @@ interface Props {
   /** Authoritative Grok status from the usage fetch — configured means the
    * CLI's OAuth login was found; authExpired means it's stale. */
   grokVendorStatus?: VendorStatus;
+  /** Authoritative Codex status from the usage fetch — configured means the
+   * CLI's OAuth login was found; authExpired means it's stale. */
+  codexVendorStatus?: VendorStatus;
   keyError: string | null;
 }
 
@@ -136,6 +150,7 @@ const OVERVIEW_PROVIDERS = [
   { id: "alibaba", label: "Alibaba" },
   { id: "kimi", label: "Moonshot" },
   { id: "grok", label: "xAI" },
+  { id: "codex", label: "Codex" },
 ] as const;
 
 export function Settings({
@@ -195,11 +210,23 @@ export function Settings({
   logoutGrok,
   grokLogoutBusy,
   grokLogoutError,
+  codexStatus,
+  installCodex,
+  codexInstallBusy,
+  codexInstallError,
+  loginCodex,
+  cancelCodexLogin,
+  codexLoginBusy,
+  codexLoginError,
+  logoutCodex,
+  codexLogoutBusy,
+  codexLogoutError,
   kimiLogoutBusy,
   kimiLogoutError,
   alibabaVendorStatus,
   kimiVendorStatus,
   grokVendorStatus,
+  codexVendorStatus,
   keyError,
 }: Props) {
   const hidden = settings.hiddenProviders;
@@ -225,6 +252,9 @@ export function Settings({
         : "not detected";
       case "grok": return grokVendorStatus?.configured
         ? grokVendorStatus.authExpired ? "login expired" : "connected"
+        : "not detected";
+      case "codex": return codexVendorStatus?.configured
+        ? codexVendorStatus.authExpired ? "login expired" : "connected"
         : "not detected";
       default: return "";
     }
@@ -265,6 +295,7 @@ export function Settings({
           <option value="alibaba">Alibaba</option>
           <option value="kimi">Moonshot</option>
           <option value="grok">xAI</option>
+          <option value="codex">Codex</option>
         </select>
       </div>
       <div className="key-row">
@@ -517,6 +548,25 @@ export function Settings({
         logoutBusy={grokLogoutBusy}
         logoutError={grokLogoutError}
         vendorStatus={grokVendorStatus}
+      />
+
+      <div className="sec-head">
+        <h2>Codex</h2>
+        <span className="meta">ChatGPT OAuth</span>
+      </div>
+      <CodexCli
+        status={codexStatus}
+        install={installCodex}
+        installBusy={codexInstallBusy}
+        installError={codexInstallError}
+        login={loginCodex}
+        cancelLogin={cancelCodexLogin}
+        loginBusy={codexLoginBusy}
+        loginError={codexLoginError}
+        logout={logoutCodex}
+        logoutBusy={codexLogoutBusy}
+        logoutError={codexLogoutError}
+        vendorStatus={codexVendorStatus}
       />
 
       {keyError && <p className="key-err">{keyError}</p>}
@@ -1526,6 +1576,241 @@ function GrokCli({
         )}
         {logoutError && <p className="key-err">{logoutError}</p>}
       </div>
+      {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+    </div>
+  );
+}
+
+function CodexCli({
+  status,
+  install,
+  installBusy,
+  installError,
+  login,
+  cancelLogin,
+  loginBusy,
+  loginError,
+  logout,
+  logoutBusy,
+  logoutError,
+  vendorStatus,
+}: {
+  status: () => Promise<CodexCliStatus | null>;
+  install: () => Promise<string | null>;
+  installBusy: boolean;
+  installError: string | null;
+  login: () => Promise<CodexLoginInfo | null>;
+  cancelLogin: () => void;
+  loginBusy: boolean;
+  loginError: string | null;
+  logout: () => Promise<string | null>;
+  logoutBusy: boolean;
+  logoutError: string | null;
+  vendorStatus?: VendorStatus;
+}) {
+  const [cli, setCli] = useState<CodexCliStatus | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [awaiting, setAwaiting] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [loginEventError, setLoginEventError] = useState<string | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(() => {
+    (async () => {
+      const s = await statusRef.current();
+      setCli(s);
+      setChecking(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!awaiting) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ ok: boolean; error?: string | null }>("codex-login-done", (e) => {
+      setAwaiting(false);
+      if (e.payload.ok) {
+        setMsg("Authenticated with Codex. Usage will appear on the next refresh.");
+        void status().then(setCli);
+      } else {
+        setLoginEventError(e.payload.error ?? "Sign-in failed.");
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [awaiting, status]);
+
+  const doInstall = async () => {
+    setMsg(null);
+    const result = await install();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  const doLogin = async () => {
+    setMsg(null);
+    setLoginEventError(null);
+    const info = await login();
+    if (info) {
+      setAuthUrl(info.authorizeUrl);
+      setAwaiting(true);
+    }
+  };
+
+  const abortLogin = () => {
+    cancelLogin();
+    setAwaiting(false);
+    setAuthUrl(null);
+  };
+
+  const doLogout = async () => {
+    setMsg(null);
+    const result = await logout();
+    if (result) {
+      setMsg(result);
+      const s = await status();
+      setCli(s);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="key-row">
+        <span className="connect-sub">Checking Codex login…</span>
+      </div>
+    );
+  }
+
+  const expired = vendorStatus?.authExpired ?? false;
+  const connected = vendorStatus
+    ? vendorStatus.configured && !expired
+    : (cli?.authenticated ?? false);
+  const err = loginEventError ?? loginError;
+
+  if (!connected) {
+    return (
+      <div className="key-row">
+        <div className="key-top">
+          <span className="key-label">Codex login<InfoTip>
+            {expired
+              ? <p style={{ margin: "0 0 8px" }}>Your Codex login expired — reconnect to restore live 5-hour and weekly usage.</p>
+              : <p style={{ margin: "0 0 8px" }}>Connect your <strong>ChatGPT / Codex</strong> account for live 5-hour and weekly usage. The Codex CLI is not required.</p>}
+            <div className="info-steps">
+              <div className="info-step">
+                <span className="info-step-num">1</span>
+                <span className="info-step-body">Click <strong>Connect Codex</strong> — a browser window opens to ChatGPT.</span>
+              </div>
+              <div className="info-step">
+                <span className="info-step-num">2</span>
+                <span className="info-step-body">Approve the authorization. This window updates automatically.</span>
+              </div>
+            </div>
+            <p style={{ margin: "8px 0 0", fontSize: "10.5px", color: "var(--faint)" }}>
+              Writes the same <code>~/.codex/auth.json</code> the <code>codex</code> CLI reads — connecting signs it in too.
+            </p>
+          </InfoTip></span>
+          <span className="key-status">{expired ? "○ login expired" : "○ not signed in"}</span>
+        </div>
+        {awaiting ? (
+          <>
+            <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+              Approve in your browser — this updates automatically.{" "}
+              {authUrl && (
+                <a
+                  className="about-link"
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void invoke("open_url", { url: authUrl });
+                  }}
+                >
+                  Re-open page
+                </a>
+              )}
+            </span>
+            <button className="btn" onClick={abortLogin}>Cancel</button>
+          </>
+        ) : (
+          <button className="btn primary" disabled={loginBusy} onClick={() => void doLogin()}>
+            {loginBusy ? "Starting…" : expired ? "Reconnect Codex" : "Connect Codex"}
+          </button>
+        )}
+        {err && <p className="key-err">{err}</p>}
+        {!cli?.installed && (
+          <div style={{ marginTop: 10 }}>
+            <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+              Optional: install the Codex CLI to also show local session rows.
+            </span>
+            <button className="btn" disabled={installBusy} onClick={() => void doInstall()}>
+              {installBusy ? "Installing…" : "Install Codex CLI"}
+            </button>
+            {installError && <p className="key-err">{installError}</p>}
+          </div>
+        )}
+        {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="key-row">
+      <div className="key-top">
+        <span className="key-label">Codex login<InfoTip>
+          <p style={{ margin: "0 0 8px" }}>Reads the ChatGPT OAuth login stored at <code>~/.codex/auth.json</code> — the same file the <strong>Codex CLI</strong> uses.</p>
+          <p style={{ margin: "0", fontSize: "10.5px", color: "var(--faint)" }}>
+            An expired token is renewed in place automatically. Disconnecting signs the <code>codex</code> CLI out too — it shares this login.
+          </p>
+        </InfoTip></span>
+        <span className="key-status set">● connected</span>
+      </div>
+      <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+        {vendorStatus?.ok
+          ? vendorStatus.secondary
+          : (vendorStatus?.error ?? "Authenticated with ChatGPT.")}
+      </span>
+      <div style={{ marginTop: 8 }}>
+        {confirmLogout ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn"
+              disabled={logoutBusy}
+              onClick={async () => {
+                await doLogout();
+                setConfirmLogout(false);
+              }}
+            >
+              {logoutBusy ? "Disconnecting…" : "Confirm disconnect"}
+            </button>
+            <button className="btn" disabled={logoutBusy} onClick={() => setConfirmLogout(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="btn" onClick={() => setConfirmLogout(true)}>
+            Disconnect
+          </button>
+        )}
+        {logoutError && <p className="key-err">{logoutError}</p>}
+      </div>
+      {!cli?.installed && (
+        <div style={{ marginTop: 10 }}>
+          <span className="connect-sub" style={{ margin: "0 0 6px" }}>
+            Optional: install the Codex CLI to also show local session rows.
+          </span>
+          <button className="btn" disabled={installBusy} onClick={() => void doInstall()}>
+            {installBusy ? "Installing…" : "Install Codex CLI"}
+          </button>
+          {installError && <p className="key-err">{installError}</p>}
+        </div>
+      )}
       {msg && <span className="connect-sub" style={{ margin: "8px 0 0" }}>{msg}</span>}
     </div>
   );
