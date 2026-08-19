@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "build:mcp": "node scripts/build-mcp.mjs",
+    "install:mcp": "node scripts/install-mcp.mjs",
     "pretauri": "npm run build:mcp",
     "tauri": "tauri",
     "test": "vitest run",

@@ -790,8 +790,9 @@ fn build_snapshot(
     // ---- Kimi Code, Copilot, Grok, Codex ----
     let kimi = scan_kimi(roots.kimi.as_path());
     let copilot = scan_copilot(roots.copilot.as_path());
-    let (grok, grok_turns) = scan_grok(roots.grok.as_path(), now);
-    let (codex, codex_turns, codex_rate) = scan_codex(roots.codex.as_path(), now);
+    let (grok, grok_turns, grok_week_sessions) = scan_grok(roots.grok.as_path(), now);
+    let (codex, codex_turns, codex_rate, codex_week_sessions) =
+        scan_codex(roots.codex.as_path(), now);
     let kimi_total = ProviderTotals::of(&kimi);
     let copilot_total = ProviderTotals::of(&copilot);
     let grok_total = ProviderTotals::of(&grok);
@@ -799,12 +800,18 @@ fn build_snapshot(
     let grok_week = if grok.is_empty() {
         None
     } else {
-        Some(build_grok_week(&grok, &grok_turns, now))
+        Some(build_grok_week(&grok, &grok_turns, grok_week_sessions, now))
     };
     let codex_week = if codex.is_empty() {
         None
     } else {
-        Some(build_codex_week(&codex, &codex_turns, now, codex_rate))
+        Some(build_codex_week(
+            &codex,
+            &codex_turns,
+            codex_week_sessions,
+            now,
+            codex_rate,
+        ))
     };
     rows.extend(kimi);
     rows.extend(copilot);
@@ -1235,13 +1242,19 @@ fn copilot_shutdown_tokens(data: &Value) -> Option<u64> {
 ///
 /// Also returns per-turn `(at, tokens, model)` records so the Overview can
 /// draw a 7-day chart — SuperGrok publishes no % ceiling, so local tokens
-/// are the real usage figure. Session *rows* stay capped at
-/// [`MAX_PROVIDER_ROWS`]; week/5h turns are read from every session whose
-/// summary time falls in the last 7 days so the chart is not “newest 25”.
+/// are the real usage figure — plus the number of sessions in that 7-day
+/// window. Session *rows* stay capped at [`MAX_PROVIDER_ROWS`]; week/5h
+/// turns and the session count are read from every session whose summary
+/// time or log mtime falls in the last 7 days, so the chart and the count
+/// are not “newest 25”.
 fn scan_grok(
     root: &Path,
     now: DateTime<Utc>,
-) -> (Vec<(DateTime<Utc>, SessionRow)>, Vec<(DateTime<Utc>, u64, String)>) {
+) -> (
+    Vec<(DateTime<Utc>, SessionRow)>,
+    Vec<(DateTime<Utc>, u64, String)>,
+    usize,
+) {
     let pattern = format!("{}/sessions/*/*/summary.json", root.to_string_lossy());
     let summaries: Vec<PathBuf> = match glob::glob(&pattern) {
         Ok(p) => p.filter_map(Result::ok).collect(),
@@ -1262,11 +1275,23 @@ fn scan_grok(
     let cut_7d = now - Duration::days(7);
     let mut rows = Vec::new();
     let mut turns: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
+    let mut week_sessions = 0usize;
     for (i, (updated, dir, summary)) in candidates.iter().enumerate() {
         let for_row = i < MAX_PROVIDER_ROWS;
-        let for_week = *updated >= cut_7d;
+        // summary.json's `last_active_at` can go stale while a long-lived
+        // session keeps appending to updates.jsonl, so a recently-written
+        // log also keeps the session in the week stats.
+        let log_mtime = std::fs::metadata(dir.join("updates.jsonl"))
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
+        let for_week =
+            *updated >= cut_7d || log_mtime.map(|m| m >= cut_7d).unwrap_or(false);
         if !for_row && !for_week {
             continue;
+        }
+        if for_week {
+            week_sessions += 1;
         }
         let id = summary
             .pointer("/info/id")
@@ -1314,12 +1339,13 @@ fn scan_grok(
             },
         ));
     }
-    (rows, turns)
+    (rows, turns, week_sessions)
 }
 
 fn build_grok_week(
     rows: &[(DateTime<Utc>, SessionRow)],
     turns: &[(DateTime<Utc>, u64, String)],
+    sessions: usize,
     now: DateTime<Utc>,
 ) -> GrokWeek {
     let cut_5h = now - Duration::hours(5);
@@ -1405,7 +1431,7 @@ fn build_grok_week(
         } else {
             EM_DASH.to_string()
         },
-        sessions: rows.len(),
+        sessions,
         last,
     }
 }
@@ -1584,6 +1610,7 @@ fn scan_codex(
     Vec<(DateTime<Utc>, SessionRow)>,
     Vec<(DateTime<Utc>, u64, String)>,
     Option<CodexRateSnap>,
+    usize,
 ) {
     let mut files: Vec<PathBuf> = Vec::new();
     // glob treats `/` as the separator on every OS — normalize so a Windows
@@ -1613,6 +1640,7 @@ fn scan_codex(
     let mut rows = Vec::new();
     let mut turns: Vec<(DateTime<Utc>, u64, String)> = Vec::new();
     let mut latest_rate: Option<CodexRateSnap> = None;
+    let mut week_sessions = 0usize;
     for (i, (mtime, path)) in candidates.iter().enumerate() {
         let for_row = i < MAX_PROVIDER_ROWS;
         let for_week = *mtime >= cut_7d;
@@ -1620,6 +1648,9 @@ fn scan_codex(
             continue;
         }
         let Some(parsed) = read_codex_session(path) else { continue };
+        if for_week {
+            week_sessions += 1;
+        }
         turns.extend(parsed.turns.iter().cloned());
         if let Some(rate) = parsed.rate {
             if latest_rate
@@ -1660,7 +1691,7 @@ fn scan_codex(
             },
         ));
     }
-    (rows, turns, latest_rate)
+    (rows, turns, latest_rate, week_sessions)
 }
 
 struct CodexRateWin {
@@ -1959,10 +1990,11 @@ fn date_from_codex_path(path: &Path) -> Option<DateTime<Utc>> {
 fn build_codex_week(
     rows: &[(DateTime<Utc>, SessionRow)],
     turns: &[(DateTime<Utc>, u64, String)],
+    sessions: usize,
     now: DateTime<Utc>,
     rate: Option<CodexRateSnap>,
 ) -> CodexWeek {
-    let grok = build_grok_week(rows, turns, now);
+    let grok = build_grok_week(rows, turns, sessions, now);
     let mut windows = Vec::new();
     if let Some(r) = rate {
         if let Some(w) = r.primary.as_ref() {
@@ -3299,7 +3331,7 @@ mod tests {
         assert_eq!(snap.sessions.len(), MAX_PROVIDER_ROWS);
         let week = snap.grok_week.expect("week");
         assert_eq!(week.week_tokens, "26K");
-        assert_eq!(week.sessions, MAX_PROVIDER_ROWS);
+        assert_eq!(week.sessions, 26);
     }
 
     // ── Codex CLI session store ──

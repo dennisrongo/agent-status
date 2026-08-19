@@ -734,6 +734,8 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
             Some(r) => format!("resets in {r}"),
             None => format!("{pct:.0}% used"),
         };
+        // Short window label like other providers ("Session", "Week"); the
+        // per-product meters below name the pool (Grok Build, Grok Imagine).
         detail.push(KeyVal::meter(period_type.clone(), value, pct));
         headline_pct = Some(pct);
     } else if monthly_limit > 0.0 {
@@ -752,6 +754,31 @@ pub fn parse(v: &Value, now: DateTime<Utc>) -> VendorStatus {
             None => "included".to_string(),
         };
         detail.push(KeyVal::text(period_type, value));
+    }
+
+    // Per-product breakdown of the blended `creditUsagePercent` (e.g.
+    // GrokBuild 16% / GrokImagine 1%). Entries without a `usagePercent`
+    // (GrokChat — the grok.com web pool) are skipped rather than guessed.
+    if let Some(products) = config.get("productUsage").and_then(|p| p.as_array()) {
+        for p in products {
+            let Some(name) = p.get("product").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let Some(pct) = p
+                .get("usagePercent")
+                .and_then(value_as_f64)
+                .filter(|n| n.is_finite())
+            else {
+                continue;
+            };
+            // No per-product reset exists in the payload — products share the
+            // account's weekly window, so reuse its countdown.
+            let value = match &reset {
+                Some(r) => format!("resets in {r}"),
+                None => format!("{pct:.0}% used"),
+            };
+            detail.push(KeyVal::meter(humanize_product(name), value, pct));
+        }
     }
 
     if on_demand_cap > 0.0 {
@@ -834,6 +861,21 @@ fn humanize_tier(raw: &str) -> String {
             .collect::<Vec<_>>()
             .join(" "),
     }
+}
+
+fn humanize_product(raw: &str) -> String {
+    // "GrokBuild" / "GrokImagine" → "Grok Build" / "Grok Imagine". Insert a
+    // space at each lower→Upper boundary; non-CamelCase names pass through.
+    let mut out = String::with_capacity(raw.len() + 4);
+    let mut prev_lower = false;
+    for ch in raw.chars() {
+        if prev_lower && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        prev_lower = ch.is_ascii_lowercase();
+        out.push(ch);
+    }
+    out
 }
 
 fn fmt_credits(n: f64) -> String {
@@ -1091,6 +1133,46 @@ mod tests {
         assert_eq!(weekly.pct, Some(42.4));
         assert_eq!(weekly.status, Some("ok"));
         assert!(s.detail.iter().any(|d| d.label == "Plan" && d.value == "SuperGrok"));
+    }
+
+    #[test]
+    fn parse_product_usage_adds_per_product_meters() {
+        let now = at("2026-08-16T18:00:00Z");
+        let v = json!({
+            "config": {
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "end": "2026-08-17T18:00:00Z"
+                },
+                "creditUsagePercent": 17,
+                "productUsage": [
+                    { "product": "GrokBuild", "usagePercent": 16 },
+                    { "product": "GrokImagine", "usagePercent": 1 },
+                    { "product": "GrokChat" }
+                ],
+                "isUnifiedBillingUser": true
+            }
+        });
+        let s = parse(&v, now);
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Weekly" && d.pct == Some(17.0)));
+        let build = s
+            .detail
+            .iter()
+            .find(|d| d.label == "Grok Build")
+            .expect("Grok Build meter");
+        assert_eq!(build.pct, Some(16.0));
+        assert_eq!(build.value, "resets in 1d 0h", "products share the window's reset");
+        assert!(s
+            .detail
+            .iter()
+            .any(|d| d.label == "Grok Imagine" && d.pct == Some(1.0)));
+        assert!(
+            !s.detail.iter().any(|d| d.label == "Grok Chat"),
+            "products without a usagePercent must not render a meter"
+        );
     }
 
     #[test]

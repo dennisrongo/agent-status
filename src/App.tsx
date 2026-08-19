@@ -1158,6 +1158,7 @@ function GrokOverview({
   const windows = vendor?.detail.filter((d) => d.pct != null) ?? [];
   const facts = vendor?.detail.filter((d) => d.pct == null) ?? [];
   const hasLocal = Boolean(grokWeek && grokWeek.sessions > 0);
+  const hasChart = Boolean(grokWeek && grokWeek.days.length > 0);
 
   if (vendor?.authExpired && !hasLocal) {
     return (
@@ -1211,40 +1212,16 @@ function GrokOverview({
           {loginError && <p className="key-err">{loginError}</p>}
         </div>
       )}
-      {windows.length > 0 ? (
-        <QuotaMeters windows={windows} />
-      ) : (
-        <div className="kpis" style={{ gridTemplateColumns: hasLocal ? "repeat(3, 1fr)" : "1fr" }}>
-          <div className="kpi">
-            <div className="k-label">Last 5 hours</div>
-            <div className="k-num">{grokWeek?.sessionTokens ?? "—"}</div>
-            <div className="k-sub">local spend</div>
-          </div>
-          {hasLocal && (
-            <>
-              <div className="kpi">
-                <div className="k-label">Last 7 days</div>
-                <div className="k-num">{grokWeek?.weekTokens ?? "—"}</div>
-                <div className="k-sub">{vendor?.secondary || "local logs"}</div>
-              </div>
-              <div className="kpi">
-                <div className="k-label">sessions</div>
-                <div className="k-num">{grokWeek?.sessions ?? 0}</div>
-                <div className="k-sub">{grokWeek?.last ? `last ${grokWeek.last}` : "local"}</div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {windows.length > 0 && <QuotaMeters windows={windows} />}
 
-      {!minimal && grokWeek && grokWeek.days.length > 0 && (
+      {hasChart && grokWeek && (windows.length === 0 || !minimal) && (
         <>
-          <div className="sec-head">
+          <div className="sec-head" style={windows.length === 0 ? { marginTop: 0 } : undefined}>
             <h2>Last 7 days</h2>
             <span className="meta">{grokWeek.weekTokens} tokens</span>
           </div>
           <WeekChart week={grokWeek.days} />
-          {grokWeek.models.length > 0 && (
+          {!minimal && grokWeek.models.length > 0 && (
             <>
               <div className="sec-head">
                 <h2>By model</h2>
@@ -1268,10 +1245,49 @@ function GrokOverview({
         </>
       )}
 
-      {!minimal && (facts.length > 0 || live) && (
+      {!hasChart && windows.length === 0 && hasLocal && (
+        <div className="kpis" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+          <div className="kpi">
+            <div className="k-label">Last 5 hours</div>
+            <div className="k-num">{grokWeek?.sessionTokens ?? "—"}</div>
+            <div className="k-sub">local spend</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">Last 7 days</div>
+            <div className="k-num">{grokWeek?.weekTokens ?? "—"}</div>
+            <div className="k-sub">{vendor?.secondary || "local logs"}</div>
+          </div>
+          <div className="kpi">
+            <div className="k-label">sessions</div>
+            <div className="k-num">{grokWeek?.sessions ?? 0}</div>
+            <div className="k-sub">{grokWeek?.last ? `last ${grokWeek.last}` : "local"}</div>
+          </div>
+        </div>
+      )}
+
+      {!minimal && (facts.length > 0 || live || hasLocal) && (
         <div className="budget" style={{ marginTop: 9 }}>
+          {hasLocal && (
+            <>
+              <div className="budget-foot" style={{ marginTop: 0 }}>
+                <span className="used">Last 5 hours</span>
+                <span className="rem">{grokWeek?.sessionTokens ?? "—"}</span>
+              </div>
+              <div className="budget-foot">
+                <span className="used">sessions</span>
+                <span className="rem">
+                  {grokWeek?.sessions ?? 0}
+                  {grokWeek?.last ? ` · last ${grokWeek.last}` : ""}
+                </span>
+              </div>
+            </>
+          )}
           {facts.map((d, i) => (
-            <div className="budget-foot" key={`${d.label}-${i}`} style={i === 0 ? { marginTop: 0 } : undefined}>
+            <div
+              className="budget-foot"
+              key={`${d.label}-${i}`}
+              style={!hasLocal && i === 0 ? { marginTop: 0 } : undefined}
+            >
               <span className="used">{d.label}</span>
               <span className="rem">{d.value}</span>
             </div>
@@ -1285,7 +1301,9 @@ function GrokOverview({
           <p>
             Token counts come from local Grok CLI session logs. Grok Build
             bills a weekly pool — there is no 5-hour session quota like
-            Claude. The live line is that weekly window, not a % meter.
+            Claude. Live meters are the Grok Build (CLI) weekly pool; the
+            grok.com web-chat limit is a separate pool xAI doesn’t expose
+            to the CLI.
           </p>
         </div>
       )}
